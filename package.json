@@ -1,0 +1,28 @@
+{
+  "name": "prooflyt-msp",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w @prooflyt/web",
+    "dev:api": "npm run dev -w @prooflyt/api",
+    "build": "npm run build -w @prooflyt/contracts && npm run build -w @prooflyt/domain && npm run build -w @prooflyt/mapping && npm run build -w @prooflyt/agents && npm run build -w @prooflyt/api && npm run build -w @prooflyt/web",
+    "typecheck": "npm run typecheck -w @prooflyt/contracts && npm run typecheck -w @prooflyt/domain && npm run typecheck -w @prooflyt/mapping && npm run typecheck -w @prooflyt/api && npm run typecheck -w @prooflyt/web",
+    "verify:smoke": "node scripts/verify-msp.mjs"
+  },
+  "devDependencies": {
+    "@playwright/cli": "^0.1.6",
+    "@types/pdfkit": "^0.17.5",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@types/multer": "^2.1.0",
+    "jszip": "^3.10.1",
+    "multer": "^2.1.1",
+    "pdfkit": "^0.18.0",
+    "xlsx": "^0.18.5"
+  }
+}

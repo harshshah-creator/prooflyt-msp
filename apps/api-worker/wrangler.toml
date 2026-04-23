@@ -1,0 +1,19 @@
+name = "prooflyt-msp-api"
+main = "src/index.ts"
+compatibility_date = "2026-04-12"
+
+[[durable_objects.bindings]]
+name = "PROOFLYT_RUNTIME"
+class_name = "ProoflytRuntime"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ProoflytRuntime"]
+
+[[d1_databases]]
+binding = "PROOFLYT_DB"
+database_name = "prooflyt-msp"
+database_id = "3303ea2c-5507-42a5-a768-ce23e30d3aaa"
+
+[vars]
+GROQ_MODEL = "llama-3.3-70b-versatile"

@@ -1,0 +1,19 @@
+{
+  "name": "@prooflyt/api-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@prooflyt/agents": "*",
+    "@prooflyt/contracts": "*",
+    "@prooflyt/domain": "*",
+    "@prooflyt/mapping": "*",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "wrangler": "^4.11.1"
+  }
+}
