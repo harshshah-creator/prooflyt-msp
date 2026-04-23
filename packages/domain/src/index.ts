@@ -1,0 +1,20 @@
+import type { ModuleId, Role } from "../../contracts/dist/index.js";
+
+export const MODULE_ACCESS: Record<ModuleId, Role[]> = {
+  dashboard: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "DEPARTMENT_OWNER", "REVIEWER", "CASE_HANDLER", "SECURITY_OWNER", "AUDITOR"],
+  setup: ["TENANT_ADMIN", "COMPLIANCE_MANAGER"],
+  sources: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "REVIEWER"],
+  register: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "REVIEWER", "AUDITOR"],
+  notices: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "REVIEWER"],
+  rights: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "CASE_HANDLER", "AUDITOR"],
+  retention: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "CASE_HANDLER", "SECURITY_OWNER", "AUDITOR"],
+  incidents: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "SECURITY_OWNER", "AUDITOR"],
+  processors: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "SECURITY_OWNER", "AUDITOR"],
+  evidence: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "REVIEWER", "CASE_HANDLER", "SECURITY_OWNER", "AUDITOR"],
+  reports: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "AUDITOR"],
+  "dpdp-reference": ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "DEPARTMENT_OWNER", "REVIEWER", "CASE_HANDLER", "SECURITY_OWNER", "AUDITOR"],
+};
+
+export function canAccessModule(moduleId: ModuleId, roles: Role[]) {
+  return MODULE_ACCESS[moduleId].some((role) => roles.includes(role));
+}

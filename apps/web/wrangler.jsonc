@@ -1,0 +1,15 @@
+{
+  "name": "prooflyt-msp-web",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-04-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "vars": {
+    "PROOFLYT_API_BASE": "https://prooflyt-msp-api.harshshah-5d8.workers.dev/api",
+    "PROOFLYT_DEMO_TOKEN": "session-user-arjun-boot",
+    "PROOFLYT_ADMIN_TOKEN": "session-ops-boot"
+  }
+}

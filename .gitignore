@@ -15,3 +15,13 @@ video/
 .agents/
 .claude/
 *.log
+*.tsbuildinfo
+.env.local
+**/.next/
+**/.open-next/
+**/.wrangler/
+**/.runtime/
+**/dist/
+**/node_modules/
+**/.vercel/
+**/.DS_Store
