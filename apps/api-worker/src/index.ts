@@ -53,6 +53,7 @@ import {
   mintOAuthState,
   consumeOAuthState,
 } from "./connectors.js";
+import { buildDpoInbox } from "./dpo-inbox.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
 /* ------------------------------------------------------------------ */
@@ -1435,6 +1436,18 @@ export default {
         const p = match("/api/portal/:slug/module/:moduleId", pathname);
         if (request.method === "GET" && p) {
           return json(await withState(env, (s) => handleModuleSnapshot(s, p.slug, p.moduleId as ModuleId, auth)));
+        }
+      }
+      // DPO inbox — single-pane-of-glass aggregator across modules.
+      {
+        const p = match("/api/portal/:slug/dpo/inbox", pathname);
+        if (request.method === "GET" && p) {
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              return buildDpoInbox(workspace);
+            }),
+          );
         }
       }
 
