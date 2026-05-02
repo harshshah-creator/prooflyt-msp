@@ -1,4 +1,6 @@
 import type { WorkspaceResponse } from "../lib/types";
+import { getConnectorBootstrap } from "../lib/api";
+import { getSessionToken } from "../lib/session";
 import {
   startOAuthConnectorAction,
   connectApiKeyConnectorAction,
@@ -28,10 +30,14 @@ type ConnectorType =
   | "AWS_S3";
 
 interface ConnectorDefinitionVM {
-  id: ConnectorType;
+  id: ConnectorType | string;
   name: string;
   vendor: string;
-  category: "CRM" | "PAYMENTS" | "HELPDESK" | "ECOMMERCE" | "DATABASE" | "OBJECT_STORAGE";
+  category:
+    | "CRM" | "PAYMENTS" | "HELPDESK" | "ECOMMERCE" | "DATABASE" | "OBJECT_STORAGE"
+    | "IDENTITY" | "MARKETING" | "COMMS" | "ANALYTICS"
+    | "MARKETPLACE" | "LOGISTICS" | "HR" | "COLLABORATION"
+    | "DATA_WAREHOUSE" | "STORAGE_DOC";
   authType: "OAUTH2" | "API_KEY" | "CONNECTION_STRING" | "AWS_IAM";
   capabilities: {
     discovery: boolean;
@@ -164,12 +170,23 @@ const CATALOGUE: ConnectorDefinitionVM[] = [
 
 function categoryLabel(c: ConnectorDefinitionVM["category"]): string {
   switch (c) {
-    case "CRM":            return "CRM";
-    case "PAYMENTS":       return "PAYMENTS";
-    case "HELPDESK":       return "HELPDESK";
-    case "ECOMMERCE":      return "E-COMMERCE";
-    case "DATABASE":       return "DATABASE";
-    case "OBJECT_STORAGE": return "OBJECT STORAGE";
+    case "CRM":             return "CRM";
+    case "PAYMENTS":        return "PAYMENTS";
+    case "HELPDESK":        return "HELPDESK";
+    case "ECOMMERCE":       return "E-COMMERCE";
+    case "DATABASE":        return "DATABASE";
+    case "OBJECT_STORAGE":  return "OBJECT STORAGE";
+    case "IDENTITY":        return "IDENTITY";
+    case "MARKETING":       return "MARKETING";
+    case "COMMS":           return "COMMS";
+    case "ANALYTICS":       return "ANALYTICS";
+    case "MARKETPLACE":     return "MARKETPLACE";
+    case "LOGISTICS":       return "LOGISTICS";
+    case "HR":              return "HR";
+    case "COLLABORATION":   return "COLLABORATION";
+    case "DATA_WAREHOUSE":  return "DATA WAREHOUSE";
+    case "STORAGE_DOC":     return "STORAGE";
+    default:                return String(c);
   }
 }
 
@@ -207,13 +224,39 @@ function eventLabel(eventType: string) {
   }
 }
 
-export function ConnectorsView({ data }: { data: WorkspaceResponse }) {
+export async function ConnectorsView({ data }: { data: WorkspaceResponse }) {
   const { workspace } = data;
   // The runtime augments the workspace with `connections` + `connectorEvents`,
   // but the published WorkspaceResponse type may not yet expose them on
   // older clients. Read defensively.
-  const connections = ((workspace as any).connections || []) as any[];
-  const events = ((workspace as any).connectorEvents || []) as any[];
+  let connections = ((workspace as any).connections || []) as any[];
+  let events = ((workspace as any).connectorEvents || []) as any[];
+
+  // Fetch the live catalogue from the worker so adding a new connector to the
+  // worker doesn't require a web redeploy. Falls back to the local CATALOGUE
+  // (legacy 8) if the worker call fails for any reason.
+  let liveCatalogue: ConnectorDefinitionVM[] = CATALOGUE;
+  try {
+    const token = await getSessionToken();
+    const bootstrap = await getConnectorBootstrap(workspace.tenant.slug, token);
+    if (Array.isArray(bootstrap.catalogue) && bootstrap.catalogue.length > 0) {
+      liveCatalogue = bootstrap.catalogue.map((c) => ({
+        id: c.id as ConnectorType,
+        name: c.name,
+        vendor: c.vendor,
+        category: c.category as ConnectorDefinitionVM["category"],
+        authType: c.authType as ConnectorDefinitionVM["authType"],
+        capabilities: c.capabilities,
+        dpdpNotes: c.dpdpNotes,
+        brand: c.brand,
+      }));
+    }
+    // Prefer fresh worker-side connections + events.
+    connections = bootstrap.connections;
+    events = bootstrap.events;
+  } catch {
+    // Keep defaults — page renders with the legacy local CATALOGUE.
+  }
 
   return (
     <>
@@ -224,7 +267,7 @@ export function ConnectorsView({ data }: { data: WorkspaceResponse }) {
             <span className="section-kicker">Catalogue</span>
             <h3>Available connectors</h3>
             <p className="module-subtitle">
-              {CATALOGUE.length} integrations covering the systems where Indian SMB customers' personal data
+              {liveCatalogue.length} integrations covering the systems where Indian SMB customers' personal data
               actually lives — payments, CRM, helpdesk, e-commerce, application databases, and object storage.
               Each connector auto-creates a Vendor (Processor) entry with DPA stub on connect.
             </p>
@@ -232,7 +275,7 @@ export function ConnectorsView({ data }: { data: WorkspaceResponse }) {
         </div>
 
         <div className="connector-grid">
-          {CATALOGUE.map((def) => {
+          {liveCatalogue.map((def) => {
             const connected = connections.filter((c) => c.connectorType === def.id && c.status === "CONNECTED");
             return (
               <article key={def.id} className="connector-card">
@@ -285,7 +328,7 @@ export function ConnectorsView({ data }: { data: WorkspaceResponse }) {
                 {def.authType === "OAUTH2" ? (
                   <form
                     className="connector-form"
-                    action={startOAuthConnectorAction.bind(null, workspace.tenant.slug, def.id)}
+                    action={startOAuthConnectorAction.bind(null, workspace.tenant.slug, def.id as ConnectorType)}
                   >
                     <button type="submit" className="primary-button">
                       Connect via OAuth
@@ -294,7 +337,7 @@ export function ConnectorsView({ data }: { data: WorkspaceResponse }) {
                 ) : (
                   <form
                     className="connector-form"
-                    action={connectApiKeyConnectorAction.bind(null, workspace.tenant.slug, def.id)}
+                    action={connectApiKeyConnectorAction.bind(null, workspace.tenant.slug, def.id as ConnectorType)}
                   >
                     {/* Per-connector fields */}
                     {def.id === "FRESHDESK" && (
