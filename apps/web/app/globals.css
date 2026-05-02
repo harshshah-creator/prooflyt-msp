@@ -1014,3 +1014,53 @@ button, input, textarea, select { font: inherit; color: inherit; }
   font-size: 0.7rem;
   font-weight: 600;
 }
+
+/* ── White-label branding for public surfaces ──────────────────────
+ * Tenant.publicBrand provides {primaryColor, accentColor, logoText}.
+ * The page sets --brand-primary / --brand-accent on the .public-stage
+ * via inline style; classes below opt into them. Falls back to the
+ * default palette when no branded class is present. */
+
+.public-stage--branded {
+  /* When the tenant brand isn't set, custom props fall back to defaults
+   * via this var() chain. */
+  --resolved-brand-primary: var(--brand-primary, var(--ink));
+  --resolved-brand-accent: var(--brand-accent, var(--accent));
+  --resolved-brand-accent-soft: var(--brand-accent-soft, var(--accent-soft));
+}
+
+.public-brand-header {
+  display: flex; gap: 1rem; align-items: center;
+  padding-bottom: 1rem; margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.public-brand-mark {
+  width: 3rem; height: 3rem; border-radius: 999px;
+  display: grid; place-items: center;
+  color: white; font-weight: 700; font-size: 0.95rem; letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.public-brand-meta { display: grid; gap: 0.15rem; }
+.public-brand-name { font-weight: 700; font-size: 1.05rem; color: var(--ink); }
+.public-brand-sub { font-size: 0.78rem; color: var(--ink-3); letter-spacing: 0.02em; }
+.public-brand-domain { font-size: 0.72rem; color: var(--ink-4); font-family: ui-monospace, SFMono-Regular, monospace; }
+
+.public-stage--branded .public-sheet {
+  /* Subtle accent-tinted header strip. */
+  border-top: 3px solid var(--resolved-brand-accent);
+}
+
+.primary-button--branded {
+  background: var(--resolved-brand-accent);
+}
+.primary-button--branded:hover {
+  filter: brightness(0.92);
+}
+
+.public-footnote {
+  margin-top: 0.85rem;
+  font-size: 0.74rem;
+  color: var(--ink-4);
+  line-height: 1.4;
+}
+.public-footnote--muted { opacity: 0.7; }
