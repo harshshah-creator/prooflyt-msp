@@ -871,3 +871,146 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .agent-btn.review:hover { background: #3a5a9a; }
 .agent-btn.reject { background: transparent; color: var(--danger); border-color: rgba(185,74,74,0.3); }
 .agent-btn.reject:hover { background: var(--danger-soft); }
+
+/* ──────────────────────────────────────────────────────────────
+   Connectors module
+   ────────────────────────────────────────────────────────────── */
+.connector-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.connector-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-0);
+}
+.connector-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.connector-card-head > div {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.connector-card-head strong { font-size: 0.95rem; color: var(--ink); }
+.connector-vendor {
+  font-size: 0.7rem;
+  color: var(--ink-2);
+}
+.connector-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: 700;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+.connector-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.connector-caps li {
+  font-size: 0.65rem;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  border: 1px solid var(--border);
+}
+.connector-dpdp {
+  font-size: 0.72rem;
+  color: var(--ink-2);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border);
+}
+.connector-dpdp p { margin: 0; }
+.connector-dpdp strong { color: var(--ink); }
+.connector-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.connector-form input {
+  font-size: 0.75rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-0);
+  color: var(--ink);
+}
+.connector-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.connector-row-actions form { display: inline-flex; }
+.connector-dsr-details {
+  position: relative;
+}
+.connector-dsr-details > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.connector-dsr-details[open] .connector-form-inline {
+  display: flex;
+}
+.connector-form-inline {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-0);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  min-width: 240px;
+  z-index: 10;
+}
+.connector-form-inline select,
+.connector-form-inline input {
+  font-size: 0.7rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-0);
+  color: var(--ink);
+}
+.empty-state {
+  font-size: 0.8rem;
+  color: var(--ink-2);
+  padding: 1.5rem 0;
+  text-align: center;
+  font-style: italic;
+}
+.pill-error {
+  background: rgba(185, 74, 74, 0.12);
+  color: var(--danger);
+  border: 1px solid rgba(185, 74, 74, 0.3);
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}

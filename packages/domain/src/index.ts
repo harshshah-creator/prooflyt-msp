@@ -13,6 +13,7 @@ export const MODULE_ACCESS: Record<ModuleId, Role[]> = {
   evidence: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "REVIEWER", "CASE_HANDLER", "SECURITY_OWNER", "AUDITOR"],
   reports: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "AUDITOR"],
   "dpdp-reference": ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "DEPARTMENT_OWNER", "REVIEWER", "CASE_HANDLER", "SECURITY_OWNER", "AUDITOR"],
+  connectors: ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "SECURITY_OWNER", "AUDITOR"],
 };
 
 export function canAccessModule(moduleId: ModuleId, roles: Role[]) {

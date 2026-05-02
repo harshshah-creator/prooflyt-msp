@@ -14,6 +14,7 @@ const navItems: Array<{ id: ModuleId; label: string; note: string; icon: string 
   { id: "incidents", label: "Breach Register", note: "Assessment to closure", icon: "△" },
   { id: "processors", label: "Vendors", note: "DPA and purge status", icon: "◯" },
   { id: "evidence", label: "Evidence", note: "Sealed proof library", icon: "▣" },
+  { id: "connectors", label: "Connectors", note: "OAuth links, auto-discovery, DSR", icon: "⌘" },
   { id: "reports", label: "Reports", note: "Compliance Pack and extracts", icon: "▧" },
   { id: "dpdp-reference", label: "DPDP Reference", note: "Act, Rules, obligations", icon: "§" },
 ];
