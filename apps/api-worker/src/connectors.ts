@@ -34,92 +34,74 @@ import type {
   TenantWorkspace,
   User,
 } from "@prooflyt/contracts";
+import { CONNECTORS_PHASE_3, PHASE_3_DISCOVERY_SCHEMAS } from "./connectors-phase-3.js";
 
 /* ------------------------------------------------------------------ */
 /*  Connector catalogue                                                */
 /* ------------------------------------------------------------------ */
 
+/**
+ *  CONNECTOR_DEFINITIONS — single source of truth for catalogue + per-connector
+ *  metadata. Adding a connector means appending one definition; the discovery,
+ *  DSR, and event-log helpers all read from here, so no per-type switch
+ *  statements need to be touched downstream.
+ */
 export const CONNECTOR_DEFINITIONS: Record<ConnectorType, ConnectorDefinition> = {
+  /* ── Phase 1: India hot-3 ──────────────────────────────────────── */
   HUBSPOT: {
-    id: "HUBSPOT",
-    name: "HubSpot CRM",
-    vendor: "HubSpot, Inc.",
-    category: "CRM",
-    authType: "OAUTH2",
+    id: "HUBSPOT", name: "HubSpot CRM", vendor: "HubSpot, Inc.",
+    category: "CRM", authType: "OAUTH2",
     apiBaseUrl: "https://api.hubapi.com",
     oauthAuthorizeUrl: "https://app.hubspot.com/oauth/authorize",
     oauthTokenUrl: "https://api.hubapi.com/oauth/v1/token",
-    oauthScopes: [
-      "crm.objects.contacts.read",
-      "crm.objects.contacts.write",
-      "tickets",
-      "crm.schemas.contacts.read",
-    ],
-    capabilities: {
-      discovery: true,
-      dsrAccess: true,
-      dsrErasure: true,
-      dsrCorrection: true,
-      grievanceIngest: true,
-      webhooks: true,
-      purgeProof: true,
-    },
+    oauthScopes: ["crm.objects.contacts.read", "crm.objects.contacts.write", "tickets", "crm.schemas.contacts.read"],
+    capabilities: { discovery: true, dsrAccess: true, dsrErasure: true, dsrCorrection: true, grievanceIngest: true, webhooks: true, purgeProof: true },
     dpdpNotes: {
       legalBasisFloor: "Subject to retention exceptions in HubSpot subscriptions and deals.",
       dataResidency: "US / EU / Canada (no India residency option). Disclose in cross-border transfer register.",
       indianFootprint: "Mid-market and SaaS adoption growing; Free + Starter tiers common in Indian SMBs.",
     },
     brand: { logoText: "HS", accentColor: "#ff7a59" },
+    serviceLabel: "CRM, marketing, sales contact records",
+    recordLabel: "contacts", simulatedRecordCount: 8_412,
+    discoveryWarnings: ["HubSpot data resides outside India. Add a cross-border transfer disclosure to the privacy notice."],
+    purposeTemplate: "Customer relationship management — {category} data captured for sales and lifecycle marketing.",
+    simulatedDsr: { exportCount: 9, eraseCount: 9 },
   },
   RAZORPAY: {
-    id: "RAZORPAY",
-    name: "Razorpay Payments",
-    vendor: "Razorpay Software Pvt Ltd",
-    category: "PAYMENTS",
-    authType: "API_KEY",
+    id: "RAZORPAY", name: "Razorpay Payments", vendor: "Razorpay Software Pvt Ltd",
+    category: "PAYMENTS", authType: "API_KEY",
     apiBaseUrl: "https://api.razorpay.com",
-    capabilities: {
-      discovery: true,
-      dsrAccess: true,
-      dsrErasure: false,        // RBI 5-year floor — see legal-basis denial path
-      dsrCorrection: true,      // anonymise via PUT /customers/:id
-      grievanceIngest: false,
-      webhooks: true,
-      purgeProof: true,
-    },
+    capabilities: { discovery: true, dsrAccess: true, dsrErasure: false, dsrCorrection: true, grievanceIngest: false, webhooks: true, purgeProof: true },
     dpdpNotes: {
-      legalBasisFloor:
-        "RBI Storage of Payment System Data direction (April 2018) mandates 5–10 year retention. " +
-        "DPDP §17(2)(a) exempts compliance with Indian law — Prooflyt issues a legal-basis denial letter " +
-        "when erasure is requested and instead anonymises non-essential PII fields.",
+      legalBasisFloor: "RBI Storage of Payment System Data direction (April 2018) mandates 5–10 year retention. DPDP §17(2)(a) exempts compliance with Indian law — Prooflyt issues a legal-basis denial letter when erasure is requested and instead anonymises non-essential PII fields.",
       dataResidency: "India only (RBI 100% local storage mandate).",
       indianFootprint: "55%+ India online payment market share. Used by virtually every Indian SaaS, D2C, fintech.",
     },
     brand: { logoText: "RP", accentColor: "#0d2eb1" },
+    serviceLabel: "Payment processing, customer & transaction records",
+    recordLabel: "customers", simulatedRecordCount: 14_329,
+    discoveryWarnings: ["Razorpay records are subject to RBI 5–10 year retention. Erasure requests will be processed via legal-basis denial under DPDP §17(2)(a)."],
+    purposeTemplate: "Payment processing — {category} data captured for transaction fulfilment and reconciliation.",
+    simulatedDsr: { exportCount: 47, eraseCount: 0 },
   },
   FRESHDESK: {
-    id: "FRESHDESK",
-    name: "Freshdesk Support",
-    vendor: "Freshworks Inc.",
-    category: "HELPDESK",
-    authType: "API_KEY",
-    apiBaseUrl: "",            // stored per-connection (subdomain.freshdesk.com)
-    capabilities: {
-      discovery: true,
-      dsrAccess: true,
-      dsrErasure: true,         // hard_delete cascade
-      dsrCorrection: true,
-      grievanceIngest: true,    // primary value
-      webhooks: true,
-      purgeProof: true,
-    },
+    id: "FRESHDESK", name: "Freshdesk Support", vendor: "Freshworks Inc.",
+    category: "HELPDESK", authType: "API_KEY", apiBaseUrl: "",
+    capabilities: { discovery: true, dsrAccess: true, dsrErasure: true, dsrCorrection: true, grievanceIngest: true, webhooks: true, purgeProof: true },
     dpdpNotes: {
       legalBasisFloor: "No regulator floor. Hard-delete cascade is irreversible — produce purge proof.",
       dataResidency: "India DC available since 2024 (Freshworks IN region).",
       indianFootprint: "Indian-origin (Freshworks/Chennai). Common across Indian SMB helpdesk deployments.",
     },
     brand: { logoText: "FD", accentColor: "#25c16f" },
+    serviceLabel: "Helpdesk tickets, contact records, grievance intake",
+    recordLabel: "tickets", simulatedRecordCount: 3_204,
+    discoveryWarnings: ["Freshdesk hard-delete is irreversible. Ensure ticket attachments are quarantined before erasure."],
+    purposeTemplate: "Customer support — {category} data captured for grievance and ticket resolution.",
+    simulatedDsr: { exportCount: 12, eraseCount: 12 },
   },
+  /* ── Phase 2: 5 expansion connectors ───────────────────────────── */
   ZOHO_CRM: {
     id: "ZOHO_CRM", name: "Zoho CRM", vendor: "Zoho Corporation Pvt Ltd",
     category: "CRM", authType: "API_KEY", apiBaseUrl: "",
@@ -130,6 +112,14 @@ export const CONNECTOR_DEFINITIONS: Record<ConnectorType, ConnectorDefinition> =
       indianFootprint: "Indian-origin (Chennai). Massive SMB footprint. Common in Indian sales & services.",
     },
     brand: { logoText: "ZH", accentColor: "#e42527" },
+    serviceLabel: "CRM contacts, leads, deals (India DC option)",
+    recordLabel: "contacts", simulatedRecordCount: 6_851,
+    discoveryWarnings: [
+      "Zoho deletion is two-step: DELETE → recycle-bin purge. Prooflyt issues both calls and records both receipts.",
+      "Confirm the connected DC is in.zoho.com if India residency is required.",
+    ],
+    purposeTemplate: "Sales and customer-success operations — {category} data captured for pipeline, contact and deal management.",
+    simulatedDsr: { exportCount: 14, eraseCount: 14 },
   },
   SHOPIFY: {
     id: "SHOPIFY", name: "Shopify", vendor: "Shopify Inc.",
@@ -141,6 +131,14 @@ export const CONNECTOR_DEFINITIONS: Record<ConnectorType, ConnectorDefinition> =
       indianFootprint: "Dominant India D2C platform. Most Indian DTC brands run here.",
     },
     brand: { logoText: "SH", accentColor: "#5e8e3e" },
+    serviceLabel: "E-commerce customers, orders, addresses, line items",
+    recordLabel: "customers + orders", simulatedRecordCount: 21_405,
+    discoveryWarnings: [
+      "Shopify enforces a 30-day SLA on customers/redact responses. Prooflyt will set a hard alarm at day 21.",
+      "Order records carry a 6-month fraud-prevention window before Shopify auto-redacts; surface this in the privacy notice.",
+    ],
+    purposeTemplate: "E-commerce operations — {category} data captured to fulfil orders, manage shipping, and run marketing.",
+    simulatedDsr: { exportCount: 8, eraseCount: 8 },
   },
   POSTGRES: {
     id: "POSTGRES", name: "PostgreSQL", vendor: "Self-hosted / managed (RDS / Supabase / Neon / etc.)",
@@ -152,6 +150,14 @@ export const CONNECTOR_DEFINITIONS: Record<ConnectorType, ConnectorDefinition> =
       indianFootprint: "The most common app database in Indian SaaS. Often holds the canonical user/order/event PII.",
     },
     brand: { logoText: "PG", accentColor: "#336791" },
+    serviceLabel: "Application database — typically users, orders, events, audit logs",
+    recordLabel: "rows across PII tables", simulatedRecordCount: 184_902,
+    discoveryWarnings: [
+      "Foreign-key constraints can block DELETE. Prooflyt generates a CASCADE plan and surfaces blockers as a denial path.",
+      "All DSR statements are parameterised and logged as evidence — no string interpolation of subject identifiers.",
+    ],
+    purposeTemplate: "Application database — {category} data captured to operate the product (auth, orders, audit).",
+    simulatedDsr: { exportCount: 38, eraseCount: 38 },
   },
   MONGODB: {
     id: "MONGODB", name: "MongoDB", vendor: "MongoDB, Inc. (Atlas) / self-hosted",
@@ -163,6 +169,14 @@ export const CONNECTOR_DEFINITIONS: Record<ConnectorType, ConnectorDefinition> =
       indianFootprint: "Dominant document DB in Indian startups. Profiles, sessions, preference data.",
     },
     brand: { logoText: "MG", accentColor: "#4faa41" },
+    serviceLabel: "Document database — typically profiles, sessions, preferences",
+    recordLabel: "documents across PII collections", simulatedRecordCount: 92_318,
+    discoveryWarnings: [
+      "Embedded arrays may need $pull operations. Prooflyt's per-collection erasure plan flags these.",
+      "Cluster region must match the residency claim in the privacy notice.",
+    ],
+    purposeTemplate: "Application document store — {category} data captured for profiles, sessions, and behavioural state.",
+    simulatedDsr: { exportCount: 27, eraseCount: 27 },
   },
   AWS_S3: {
     id: "AWS_S3", name: "AWS S3", vendor: "Amazon Web Services",
@@ -174,7 +188,17 @@ export const CONNECTOR_DEFINITIONS: Record<ConnectorType, ConnectorDefinition> =
       indianFootprint: "Default object storage for almost every Indian cloud-native company. Holds uploads, KYC scans, exports, backups.",
     },
     brand: { logoText: "S3", accentColor: "#ff9900" },
+    serviceLabel: "Object storage — uploaded documents, KYC scans, exports, backups",
+    recordLabel: "objects with PII metadata or path", simulatedRecordCount: 47_233,
+    discoveryWarnings: [
+      "S3 versioning + cross-region replication are DPDP §16 cross-border surfaces. Versioned objects need DeleteObjectVersion.",
+      "Confirm the bucket region; ap-south-1 (Mumbai) or ap-south-2 (Hyderabad) keep data in India.",
+    ],
+    purposeTemplate: "Object storage — {category} data captured as uploads, exports, KYC documents, or backups.",
+    simulatedDsr: { exportCount: 16, eraseCount: 16 },
   },
+  /* ── Phase 3: 50 strategic connectors (added below) ────────────── */
+  ...CONNECTORS_PHASE_3,
 };
 
 export function listConnectors(): ConnectorDefinition[] {
@@ -369,16 +393,9 @@ function ensureProcessorForConnection(
 }
 
 function connectorServiceLabel(type: ConnectorType): string {
-  switch (type) {
-    case "HUBSPOT":   return "CRM, marketing, sales contact records";
-    case "RAZORPAY":  return "Payment processing, customer & transaction records";
-    case "FRESHDESK": return "Helpdesk tickets, contact records, grievance intake";
-    case "ZOHO_CRM":  return "CRM contacts, leads, deals (India DC option)";
-    case "SHOPIFY":   return "E-commerce customers, orders, addresses, line items";
-    case "POSTGRES":  return "Application database — typically users, orders, events, audit logs";
-    case "MONGODB":   return "Document database — typically profiles, sessions, preferences";
-    case "AWS_S3":    return "Object storage — uploaded documents, KYC scans, exports, backups";
-  }
+  // Single source of truth: read from the catalogue. Adding a new connector
+  // type doesn't require touching this function.
+  return CONNECTOR_DEFINITIONS[type].serviceLabel;
 }
 
 /* ------------------------------------------------------------------ */
@@ -830,6 +847,7 @@ const DISCOVERY_SCHEMAS: Record<ConnectorType, ConnectorDiscoveredField[]> = {
     { systemName: "AWS S3", fieldName: "backups/db-{date}.sql.gz",           category: "Backup",     identifierType: "Embedded PII",          confidence: 0.55, legalBasisHint: "Security",       retentionHint: "Per backup schedule" },
     { systemName: "AWS S3", fieldName: "object.versionId",                   category: "Versioning", identifierType: "Operational attribute", confidence: 0.90, legalBasisHint: "Security",       retentionHint: "Per versioning policy" },
   ],
+  ...PHASE_3_DISCOVERY_SCHEMAS,
 };
 
 export function performDiscovery(
@@ -915,79 +933,20 @@ export function performDiscovery(
   return result;
 }
 
+// Catalogue-driven helpers: every per-connector value lives in
+// CONNECTOR_DEFINITIONS, so adding a connector means appending one entry — no
+// switch statement edits required.
 function discoveryPurpose(type: ConnectorType, category: string): string {
-  switch (type) {
-    case "RAZORPAY":  return `Payment processing — ${category.toLowerCase()} data captured for transaction fulfilment and reconciliation.`;
-    case "HUBSPOT":   return `Customer relationship management — ${category.toLowerCase()} data captured for sales and lifecycle marketing.`;
-    case "FRESHDESK": return `Customer support — ${category.toLowerCase()} data captured for grievance and ticket resolution.`;
-    case "ZOHO_CRM":  return `Sales and customer-success operations — ${category.toLowerCase()} data captured for pipeline, contact and deal management.`;
-    case "SHOPIFY":   return `E-commerce operations — ${category.toLowerCase()} data captured to fulfil orders, manage shipping, and run marketing.`;
-    case "POSTGRES":  return `Application database — ${category.toLowerCase()} data captured to operate the product (auth, orders, audit).`;
-    case "MONGODB":   return `Application document store — ${category.toLowerCase()} data captured for profiles, sessions, and behavioural state.`;
-    case "AWS_S3":    return `Object storage — ${category.toLowerCase()} data captured as uploads, exports, KYC documents, or backups.`;
-  }
+  return CONNECTOR_DEFINITIONS[type].purposeTemplate.replace("{category}", category.toLowerCase());
 }
-
 function simulatedRecordCount(type: ConnectorType): number {
-  switch (type) {
-    case "RAZORPAY":  return 14_329;
-    case "HUBSPOT":   return 8_412;
-    case "FRESHDESK": return 3_204;
-    case "ZOHO_CRM":  return 6_851;
-    case "SHOPIFY":   return 21_405;
-    case "POSTGRES":  return 184_902;
-    case "MONGODB":   return 92_318;
-    case "AWS_S3":    return 47_233;
-  }
+  return CONNECTOR_DEFINITIONS[type].simulatedRecordCount;
 }
-
 function recordLabel(type: ConnectorType): string {
-  switch (type) {
-    case "RAZORPAY":  return "customers";
-    case "HUBSPOT":   return "contacts";
-    case "FRESHDESK": return "tickets";
-    case "ZOHO_CRM":  return "contacts";
-    case "SHOPIFY":   return "customers + orders";
-    case "POSTGRES":  return "rows across PII tables";
-    case "MONGODB":   return "documents across PII collections";
-    case "AWS_S3":    return "objects with PII metadata or path";
-  }
+  return CONNECTOR_DEFINITIONS[type].recordLabel;
 }
-
 function discoveryWarnings(type: ConnectorType): string[] {
-  switch (type) {
-    case "RAZORPAY":
-      return ["Razorpay records are subject to RBI 5–10 year retention. Erasure requests will be processed via legal-basis denial under DPDP §17(2)(a)."];
-    case "HUBSPOT":
-      return ["HubSpot data resides outside India. Add a cross-border transfer disclosure to the privacy notice."];
-    case "FRESHDESK":
-      return ["Freshdesk hard-delete is irreversible. Ensure ticket attachments are quarantined before erasure."];
-    case "ZOHO_CRM":
-      return [
-        "Zoho deletion is two-step: DELETE → recycle-bin purge. Prooflyt issues both calls and records both receipts.",
-        "Confirm the connected DC is in.zoho.com if India residency is required.",
-      ];
-    case "SHOPIFY":
-      return [
-        "Shopify enforces a 30-day SLA on customers/redact responses. Prooflyt will set a hard alarm at day 21.",
-        "Order records carry a 6-month fraud-prevention window before Shopify auto-redacts; surface this in the privacy notice.",
-      ];
-    case "POSTGRES":
-      return [
-        "Foreign-key constraints can block DELETE. Prooflyt generates a CASCADE plan and surfaces blockers as a denial path.",
-        "All DSR statements are parameterised and logged as evidence — no string interpolation of subject identifiers.",
-      ];
-    case "MONGODB":
-      return [
-        "Embedded arrays may need $pull operations. Prooflyt's per-collection erasure plan flags these.",
-        "Cluster region must match the residency claim in the privacy notice.",
-      ];
-    case "AWS_S3":
-      return [
-        "S3 versioning + cross-region replication are DPDP §16 cross-border surfaces. Versioned objects need DeleteObjectVersion.",
-        "Confirm the bucket region; ap-south-1 (Mumbai) or ap-south-2 (Hyderabad) keep data in India.",
-      ];
-  }
+  return CONNECTOR_DEFINITIONS[type].discoveryWarnings;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1118,16 +1077,8 @@ function pushEvidence(
 }
 
 function simulatedDsrCount(type: ConnectorType, action: "EXPORT" | "ERASE"): number {
-  switch (type) {
-    case "RAZORPAY":  return action === "EXPORT" ? 47 : 0;
-    case "HUBSPOT":   return action === "EXPORT" ? 9 : 9;
-    case "FRESHDESK": return action === "EXPORT" ? 12 : 12;
-    case "ZOHO_CRM":  return action === "EXPORT" ? 14 : 14;
-    case "SHOPIFY":   return action === "EXPORT" ? 8 : 8;
-    case "POSTGRES":  return action === "EXPORT" ? 38 : 38;
-    case "MONGODB":   return action === "EXPORT" ? 27 : 27;
-    case "AWS_S3":    return action === "EXPORT" ? 16 : 16;
-  }
+  const d = CONNECTOR_DEFINITIONS[type].simulatedDsr;
+  return action === "EXPORT" ? d.exportCount : d.eraseCount;
 }
 
 /* ------------------------------------------------------------------ */
