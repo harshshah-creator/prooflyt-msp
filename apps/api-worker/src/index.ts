@@ -53,6 +53,15 @@ import {
   mintOAuthState,
   consumeOAuthState,
 } from "./connectors.js";
+import {
+  registerSubscription as registerWebhookSubscription,
+  listSubscriptionsPublic as listWebhookSubscriptions,
+  deleteSubscription as deleteWebhookSubscription,
+  pauseSubscription as pauseWebhookSubscription,
+  resumeSubscription as resumeWebhookSubscription,
+  fireWebhooks,
+  ensureWebhookArrays,
+} from "./webhooks-outbound.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
 /* ------------------------------------------------------------------ */
@@ -268,6 +277,45 @@ function appendAudit(
     summary,
   };
   workspace.auditTrail.unshift(event);
+  // Queue an outbound webhook fan-out at the end of this request. The
+  // queue lives on the workspace object as a non-enumerable property so
+  // it never gets serialised back to durable storage; withState() drains
+  // it after putState() and ships deliveries via ctx.waitUntil().
+  enqueueWebhookEvent(workspace, `${module}.${action}`, {
+    auditId: event.id,
+    actor: event.actor,
+    targetId: event.targetId,
+    summary: event.summary,
+    occurredAt: event.createdAt,
+  });
+}
+
+/**
+ *  Per-workspace, request-scoped queue of webhook events. Stored as a
+ *  non-enumerable property so JSON.stringify (durable-object putState)
+ *  doesn't persist it. Drained in withState() after the state write.
+ */
+const PENDING_WEBHOOK_KEY = "__pendingWebhookEvents";
+interface PendingWebhookEvent { eventType: string; body: unknown }
+
+function enqueueWebhookEvent(workspace: TenantWorkspace, eventType: string, body: unknown) {
+  const ws = workspace as unknown as Record<string, PendingWebhookEvent[] | undefined>;
+  if (!ws[PENDING_WEBHOOK_KEY]) {
+    Object.defineProperty(ws, PENDING_WEBHOOK_KEY, {
+      value: [] as PendingWebhookEvent[],
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  }
+  ws[PENDING_WEBHOOK_KEY]!.push({ eventType, body });
+}
+
+function drainPendingWebhookEvents(workspace: TenantWorkspace): PendingWebhookEvent[] {
+  const ws = workspace as unknown as Record<string, PendingWebhookEvent[] | undefined>;
+  const queue = ws[PENDING_WEBHOOK_KEY] ?? [];
+  ws[PENDING_WEBHOOK_KEY] = [];
+  return queue;
 }
 
 function updateObligation(workspace: TenantWorkspace, module: ModuleId, fields: Partial<TenantWorkspace["obligations"][number]>) {
@@ -961,6 +1009,113 @@ function handleIncidentUpdate(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Outbound webhook subscriptions                                      */
+/* ------------------------------------------------------------------ */
+
+const WEBHOOK_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+];
+
+function requireWebhookRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!WEBHOOK_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Webhook configuration is restricted by role.");
+  }
+}
+
+function handleWebhookList(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  return { ok: true, subscriptions: listWebhookSubscriptions(workspace) };
+}
+
+async function handleWebhookCreate(
+  state: AppState,
+  tenantSlug: string,
+  body: { url?: string; eventFilter?: string; secret?: string; description?: string },
+  authHeader: string | undefined,
+  env: Env,
+) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  if (!env.CONNECTORS_MASTER_SECRET) {
+    throw new HttpError(503, "Webhook secret sealing is not configured (CONNECTORS_MASTER_SECRET missing).");
+  }
+  if (!body?.url) throw new HttpError(400, "url is required.");
+  if (!body?.eventFilter) throw new HttpError(400, "eventFilter is required.");
+  if (!body?.secret) throw new HttpError(400, "secret is required.");
+  let sub;
+  try {
+    sub = await registerWebhookSubscription(workspace, {
+      url: body.url,
+      eventFilter: body.eventFilter,
+      description: body.description,
+      rawSecret: body.secret,
+      masterSecret: env.CONNECTORS_MASTER_SECRET,
+    }, user);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+  appendAudit(workspace, user, "setup", "WEBHOOK_SUBSCRIPTION_CREATED", sub.id,
+    `Webhook subscription registered for ${body.url} (filter: ${body.eventFilter}).`);
+  return {
+    ok: true,
+    subscription: {
+      id: sub.id, url: sub.url, eventFilter: sub.eventFilter, description: sub.description,
+      active: sub.active, createdAt: sub.createdAt, updatedAt: sub.updatedAt,
+    },
+  };
+}
+
+function handleWebhookDelete(state: AppState, tenantSlug: string, id: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  const removed = deleteWebhookSubscription(workspace, id);
+  if (!removed) throw new HttpError(404, "Subscription not found.");
+  appendAudit(workspace, user, "setup", "WEBHOOK_SUBSCRIPTION_DELETED", id,
+    `Webhook subscription ${id} deleted.`);
+  return { ok: true };
+}
+
+function handleWebhookPause(state: AppState, tenantSlug: string, id: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  const sub = pauseWebhookSubscription(workspace, id, "Paused by operator.");
+  if (!sub) throw new HttpError(404, "Subscription not found.");
+  appendAudit(workspace, user, "setup", "WEBHOOK_SUBSCRIPTION_PAUSED", id,
+    `Webhook subscription ${id} paused.`);
+  return { ok: true, subscription: { id: sub.id, active: sub.active, pausedReason: sub.pausedReason } };
+}
+
+function handleWebhookResume(state: AppState, tenantSlug: string, id: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  const sub = resumeWebhookSubscription(workspace, id);
+  if (!sub) throw new HttpError(404, "Subscription not found.");
+  appendAudit(workspace, user, "setup", "WEBHOOK_SUBSCRIPTION_RESUMED", id,
+    `Webhook subscription ${id} resumed.`);
+  return { ok: true, subscription: { id: sub.id, active: sub.active } };
+}
+
+function handleWebhookDeliveries(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  const { deliveries } = ensureWebhookArrays(workspace);
+  return {
+    ok: true,
+    count: deliveries.length,
+    deliveries: deliveries.slice(0, 100).map((d) => ({
+      id: d.id, subscriptionId: d.subscriptionId, eventType: d.eventType,
+      status: d.status, httpStatus: d.httpStatus, attempts: d.attempts,
+      lastError: d.lastError, createdAt: d.createdAt, deliveredAt: d.deliveredAt,
+      payloadSha256: d.payloadSha256,
+    })),
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Processor updates                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -1295,12 +1450,21 @@ export class ProoflytRuntime extends DurableObject {
   }
 }
 
+/**
+ *  Request-scoped ExecutionContext, set by `fetch` so that withState can
+ *  fire-and-forget webhook deliveries via ctx.waitUntil. If unset (e.g.
+ *  scheduled handler), webhook drain is awaited inline so we don't
+ *  silently drop events.
+ */
+let _currentCtx: ExecutionContext | undefined;
+
 async function withState<T>(env: Env, fn: (state: AppState) => Promise<T> | T) {
   const id = env.PROOFLYT_RUNTIME.idFromName("default");
   const stub = env.PROOFLYT_RUNTIME.get(id);
   const state = await stub.getState();
   const result = await fn(state);
   await stub.putState(state);
+  await dispatchPendingWebhooks(env, state);
   return result;
 }
 
@@ -1310,7 +1474,51 @@ async function withRuntime<T>(env: Env, fn: (state: AppState, runtime: ProoflytR
   const state = await stub.getState();
   const result = await fn(state, stub);
   await stub.putState(state);
+  await dispatchPendingWebhooks(env, state);
   return result;
+}
+
+/**
+ *  Drain the in-memory webhook queue across every workspace touched in
+ *  this request. Each workspace's queue is per-request (non-enumerable
+ *  property), so this is safe to run on every request even if no events
+ *  were emitted.
+ */
+async function dispatchPendingWebhooks(env: Env, state: AppState) {
+  if (!env.CONNECTORS_MASTER_SECRET) return; // no master secret = sealing impossible; skip silently
+  const allPromises: Promise<void>[] = [];
+  for (const slug of Object.keys(state.workspaces)) {
+    const ws = state.workspaces[slug];
+    if (!ws) continue;
+    const queue = drainPendingWebhookEvents(ws);
+    for (const ev of queue) {
+      const promises = fireWebhooks(ws, {
+        eventType: ev.eventType,
+        body: ev.body,
+        env: { masterSecret: env.CONNECTORS_MASTER_SECRET },
+      });
+      for (const p of promises) allPromises.push(p);
+    }
+  }
+  if (allPromises.length === 0) return;
+  // Persist any delivery-record updates (success/failure flags) by
+  // awaiting then writing state again. We do this only when there was
+  // actual work, to avoid the round-trip on cold paths.
+  const settle = Promise.allSettled(allPromises).then(async () => {
+    try {
+      const id = env.PROOFLYT_RUNTIME.idFromName("default");
+      const stub = env.PROOFLYT_RUNTIME.get(id);
+      await stub.putState(state);
+    } catch {
+      // best-effort: durable write may race with another handler; the
+      // delivery log is observability, not a system-of-record.
+    }
+  });
+  if (_currentCtx) {
+    _currentCtx.waitUntil(settle);
+  } else {
+    await settle;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1337,12 +1545,14 @@ function match(pattern: string, pathname: string): Record<string, string> | null
 /* ------------------------------------------------------------------ */
 
 export default {
-  async fetch(request: Request, env: Env) {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
     const { pathname } = url;
     const auth = request.headers.get("authorization") || undefined;
     // L3: capture origin so json()/errorResponse() can echo a strict allow-list.
     _currentOrigin = request.headers.get("origin");
+    // Capture so withState can fire-and-forget webhook deliveries.
+    _currentCtx = ctx;
 
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -1875,6 +2085,44 @@ export default {
               return { ok: true, eventId: result.event.id, rightsCaseId: result.createdRights?.id };
             }),
           );
+        }
+      }
+
+      /* ---------- Outbound webhooks (Slack/PagerDuty/Datadog hub) ---------- */
+      {
+        const p = match("/api/portal/:slug/webhooks/subscriptions", pathname);
+        if (p && request.method === "GET") {
+          return json(await withState(env, (s) => handleWebhookList(s, p.slug, auth)));
+        }
+        if (p && request.method === "POST") {
+          const body = await parseBody<{
+            url: string; eventFilter: string; secret: string; description?: string;
+          }>(request);
+          return json(await withState(env, (s) => handleWebhookCreate(s, p.slug, body, auth, env)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/webhooks/subscriptions/:id", pathname);
+        if (p && request.method === "DELETE") {
+          return json(await withState(env, (s) => handleWebhookDelete(s, p.slug, p.id, auth)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/webhooks/subscriptions/:id/pause", pathname);
+        if (p && request.method === "POST") {
+          return json(await withState(env, (s) => handleWebhookPause(s, p.slug, p.id, auth)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/webhooks/subscriptions/:id/resume", pathname);
+        if (p && request.method === "POST") {
+          return json(await withState(env, (s) => handleWebhookResume(s, p.slug, p.id, auth)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/webhooks/deliveries", pathname);
+        if (p && request.method === "GET") {
+          return json(await withState(env, (s) => handleWebhookDeliveries(s, p.slug, auth)));
         }
       }
 
