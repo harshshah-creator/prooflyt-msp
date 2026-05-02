@@ -53,6 +53,13 @@ import {
   mintOAuthState,
   consumeOAuthState,
 } from "./connectors.js";
+import {
+  createAuditExportKey,
+  revokeAuditExportKey,
+  listAuditExportKeysPublic,
+  authenticateExportKey,
+  exportAuditWindow,
+} from "./audit-export.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
 /* ------------------------------------------------------------------ */
@@ -958,6 +965,113 @@ function handleIncidentUpdate(
   });
   syncMetrics(workspace);
   return { ok: true, incident };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Audit-log SIEM export                                              */
+/* ------------------------------------------------------------------ */
+
+const AUDIT_EXPORT_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+];
+
+function requireAuditExportRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!AUDIT_EXPORT_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Audit-export key management is restricted by role.");
+  }
+}
+
+function handleAuditKeyList(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAuditExportRole(user);
+  return { ok: true, keys: listAuditExportKeysPublic(workspace) };
+}
+
+async function handleAuditKeyCreate(
+  state: AppState,
+  tenantSlug: string,
+  body: { label?: string },
+  authHeader?: string,
+) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAuditExportRole(user);
+  if (!body?.label) throw new HttpError(400, "label is required.");
+  let result;
+  try {
+    result = await createAuditExportKey(workspace, body.label, user.id);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+  appendAudit(workspace, user, "setup", "AUDIT_EXPORT_KEY_CREATED", result.key.id,
+    `Audit export key minted for "${result.key.label}".`);
+  // The raw key is returned ONCE here. Subsequent list calls only show the hint.
+  return {
+    ok: true,
+    key: {
+      id: result.key.id,
+      label: result.key.label,
+      createdAt: result.key.createdAt,
+    },
+    rawKey: result.rawKey,
+    integrationHints: {
+      splunkHec: `Headers: { Authorization: \"Bearer ${result.rawKey}\" } → POST endpoint accepts NDJSON`,
+      datadog: `Bearer this key on the upstream collector; we emit one JSON object per line.`,
+      curl: `curl -H 'authorization: Bearer ${result.rawKey}' '<API_BASE>/api/audit-export/stream?since=2026-01-01T00:00:00Z'`,
+    },
+  };
+}
+
+function handleAuditKeyRevoke(state: AppState, tenantSlug: string, keyId: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAuditExportRole(user);
+  const ok = revokeAuditExportKey(workspace, keyId);
+  if (!ok) throw new HttpError(404, "Key not found.");
+  appendAudit(workspace, user, "setup", "AUDIT_EXPORT_KEY_REVOKED", keyId,
+    `Audit export key ${keyId} revoked.`);
+  return { ok: true };
+}
+
+async function handleAuditStream(
+  env: Env,
+  request: Request,
+  request_in: { since?: string; limit?: number },
+) {
+  const auth = request.headers.get("authorization") || "";
+  const m = /^Bearer\s+(\S+)$/i.exec(auth);
+  if (!m) {
+    return new Response("Missing Authorization: Bearer …", {
+      status: 401,
+      headers: { ...corsHeadersFor(_currentOrigin), "content-type": "text/plain" },
+    });
+  }
+  const rawKey = m[1];
+  const fromIp = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for") ?? undefined;
+  return await withState(env, (s) => streamForKey(s, rawKey, fromIp, request_in));
+
+  async function streamForKey(state: AppState, key: string, ip: string | undefined, opts: { since?: string; limit?: number }) {
+    const auth = await authenticateExportKey(state.workspaces, key, ip);
+    if (auth.ok === false) {
+      return new Response(auth.reason, {
+        status: auth.status,
+        headers: { ...corsHeadersFor(_currentOrigin), "content-type": "text/plain" },
+      });
+    }
+    const result = exportAuditWindow(auth.workspace, opts, auth.key);
+    return new Response(result.body, {
+      status: 200,
+      headers: {
+        ...corsHeadersFor(_currentOrigin),
+        "content-type": "application/x-ndjson; charset=utf-8",
+        "x-prooflyt-count": String(result.count),
+        "x-prooflyt-next-cursor": result.nextCursor ?? "",
+        "x-prooflyt-exhausted": result.exhausted ? "true" : "false",
+        "cache-control": "no-store",
+      },
+    });
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1875,6 +1989,35 @@ export default {
               return { ok: true, eventId: result.event.id, rightsCaseId: result.createdRights?.id };
             }),
           );
+        }
+      }
+
+      /* ---------- Audit-log SIEM export (API-key authed, no session) ---------- */
+      {
+        // Tenant-admin endpoints to manage long-lived export keys.
+        const p = match("/api/portal/:slug/audit-export/keys", pathname);
+        if (p && request.method === "GET") {
+          return json(await withState(env, (s) => handleAuditKeyList(s, p.slug, auth)));
+        }
+        if (p && request.method === "POST") {
+          const body = await parseBody<{ label?: string }>(request);
+          return json(await withState(env, (s) => handleAuditKeyCreate(s, p.slug, body, auth)), 201);
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/audit-export/keys/:keyId", pathname);
+        if (p && request.method === "DELETE") {
+          return json(await withState(env, (s) => handleAuditKeyRevoke(s, p.slug, p.keyId, auth)));
+        }
+      }
+      {
+        // Streaming NDJSON for SIEM pollers (Splunk HEC, Datadog Logs, Elastic).
+        // Auth: Authorization: Bearer pflyt_ak_<...>
+        if (request.method === "GET" && pathname === "/api/audit-export/stream") {
+          const sinceParam = url.searchParams.get("since") ?? undefined;
+          const limitParam = url.searchParams.get("limit");
+          const limit = limitParam ? Number(limitParam) : undefined;
+          return await handleAuditStream(env, request, { since: sinceParam, limit: Number.isFinite(limit) ? limit : undefined });
         }
       }
 
