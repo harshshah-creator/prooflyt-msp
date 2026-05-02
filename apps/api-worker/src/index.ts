@@ -53,6 +53,11 @@ import {
   mintOAuthState,
   consumeOAuthState,
 } from "./connectors.js";
+import {
+  generateDpa,
+  persistDpaOutput,
+  findConnectorDefForProcessor,
+} from "./dpa-generator.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
 /* ------------------------------------------------------------------ */
@@ -1610,6 +1615,60 @@ export default {
         if (request.method === "POST" && p) {
           const body = await parseBody<any>(request);
           return json(await withState(env, (s) => handleProcessorUpdate(s, p.slug, p.processorId, body, auth)));
+        }
+      }
+      // DPA generator — produces a Markdown DPA tailored to the processor's
+      // connector category + DPDP context. Result is persisted as an
+      // EvidenceArtifact so it appears in the Compliance Pack.
+      {
+        const p = match("/api/portal/:slug/processors/:processorId/dpa", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{
+            fiduciaryAddress: string;
+            fiduciaryDpoName: string;
+            fiduciaryDpoEmail: string;
+            effectiveDate?: string;
+            termMonths?: number;
+            connectorType?: ConnectorType;
+          }>(request);
+          if (!body.fiduciaryDpoName || !body.fiduciaryDpoEmail) {
+            throw new ValidationError("fiduciaryDpoName and fiduciaryDpoEmail required.");
+          }
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const processor = workspace.processors.find((proc) => proc.id === p.processorId);
+              if (!processor) throw new HttpError(404, "Processor not found.");
+              const def = body.connectorType
+                ? CONNECTOR_DEFINITIONS[body.connectorType]
+                : findConnectorDefForProcessor(processor, CONNECTOR_DEFINITIONS);
+              const output = generateDpa({
+                tenantName: workspace.tenant.name,
+                tenantIndustry: workspace.tenant.industry,
+                fiduciaryAddress: body.fiduciaryAddress || "[Operator must fill in registered office]",
+                fiduciaryDpoName: body.fiduciaryDpoName,
+                fiduciaryDpoEmail: body.fiduciaryDpoEmail,
+                processor,
+                connectorDefinition: def,
+                effectiveDate: body.effectiveDate || new Date().toISOString().slice(0, 10),
+                termMonths: body.termMonths,
+              });
+              persistDpaOutput(workspace, output);
+              return output;
+            }),
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/dpa-templates", pathname);
+        if (request.method === "GET" && p) {
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const ws = workspace as any;
+              return { templates: (ws.dpaTemplates || []).slice(0, 50) };
+            }),
+          );
         }
       }
 
