@@ -53,6 +53,11 @@ import {
   mintOAuthState,
   consumeOAuthState,
 } from "./connectors.js";
+import {
+  enforceRetention,
+  runRetentionForAllTenants,
+  type EnforceOptions,
+} from "./retention-enforcement.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
 /* ------------------------------------------------------------------ */
@@ -933,6 +938,64 @@ function handleDeletionUpdate(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Retention enforcement (cron + manual)                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ *  Roles allowed to inspect or trigger retention enforcement. Same gate as
+ *  other connector-touching workflows (security: C4 parity).
+ */
+const RETENTION_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+  "AUDITOR",
+];
+
+function requireRetentionRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!RETENTION_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Retention enforcement is restricted by role.");
+  }
+}
+
+function handleRetentionPreview(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireRetentionRole(user);
+  // Dry run: never mutate state.
+  const report = enforceRetention(workspace, { dryRun: true });
+  return { ok: true, report };
+}
+
+function handleRetentionRun(
+  state: AppState,
+  tenantSlug: string,
+  body: { taskIds?: string[]; dryRun?: boolean },
+  authHeader?: string,
+) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireRetentionRole(user);
+  const dryRun = Boolean(body?.dryRun);
+  const opts: EnforceOptions = {
+    dryRun,
+    taskIds: Array.isArray(body?.taskIds) && body!.taskIds!.length > 0 ? body!.taskIds : undefined,
+  };
+  const report = enforceRetention(workspace, opts);
+  if (!dryRun) {
+    appendAudit(
+      workspace,
+      user,
+      "retention",
+      "RETENTION_ENFORCEMENT_RUN",
+      tenantSlug,
+      `Manual retention run: erased=${report.erased}, denied=${report.denied}, pending=${report.pending}.`,
+    );
+    syncMetrics(workspace);
+  }
+  return { ok: true, report };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Incident updates                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -1580,6 +1643,24 @@ export default {
           return json(await withState(env, (s) => handleDeletionUpdate(s, p.slug, p.taskId, body, auth)));
         }
       }
+      {
+        // Retention preview — read-only dry run that returns what *would*
+        // happen if enforcement ran right now. Useful for the UI's "preview
+        // schedule" banner before flipping the switch on cron.
+        const p = match("/api/portal/:slug/retention/preview", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => handleRetentionPreview(s, p.slug, auth)));
+        }
+      }
+      {
+        // Manual on-demand enforcement. Runs the same code path as the cron
+        // but lets a TENANT_ADMIN press "Enforce now" or target specific tasks.
+        const p = match("/api/portal/:slug/retention/run", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{ taskIds?: string[]; dryRun?: boolean }>(request);
+          return json(await withState(env, (s) => handleRetentionRun(s, p.slug, body, auth)));
+        }
+      }
 
       /* ---------- Incidents ---------- */
       {
@@ -1911,5 +1992,42 @@ export default {
     } catch (error) {
       return errorResponse(error);
     }
+  },
+
+  /**
+   *  Cloudflare Worker scheduled handler — fires on the cron triggers
+   *  registered in `wrangler.toml`. Walks every tenant workspace, runs
+   *  retention enforcement, and persists the resulting state mutations.
+   *
+   *  Why one DO call wrapping the loop: the AppState lives in a single
+   *  Durable Object instance ("default"). One get/put per cron run is
+   *  cheaper and atomic vs. per-tenant transactions; a partial run that
+   *  fails mid-loop won't write half-applied state.
+   */
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const id = env.PROOFLYT_RUNTIME.idFromName("default");
+          const stub = env.PROOFLYT_RUNTIME.get(id);
+          const state = await stub.getState();
+          const report = runRetentionForAllTenants(state.workspaces, { asOf: new Date(event.scheduledTime) });
+          await stub.putState(state);
+          // Worker logs are tail-able via `wrangler tail` and surface in the
+          // Cloudflare dashboard; structured JSON for greppability.
+          console.log(JSON.stringify({
+            kind: "retention.scheduled",
+            cron: event.cron,
+            scheduledTime: new Date(event.scheduledTime).toISOString(),
+            tenantsScanned: report.tenantsScanned,
+            erased: report.totals.erased,
+            denied: report.totals.denied,
+            pending: report.totals.pending,
+          }));
+        } catch (err) {
+          console.error("retention.scheduled.failed", (err as Error).message);
+        }
+      })(),
+    );
   },
 };
