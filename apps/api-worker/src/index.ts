@@ -53,6 +53,12 @@ import {
   mintOAuthState,
   consumeOAuthState,
 } from "./connectors.js";
+import {
+  renderForFirm,
+  normaliseFirm,
+  SUPPORTED_FIRMS,
+  type AuditFirm,
+} from "./compliance-pack-templates.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
 /* ------------------------------------------------------------------ */
@@ -1125,8 +1131,9 @@ async function handleEvidenceDownload(
 /*  Compliance Pack export                                             */
 /* ------------------------------------------------------------------ */
 
-function handleExportCompliancePack(state: AppState, tenantSlug: string, authHeader?: string) {
+function handleExportCompliancePack(state: AppState, tenantSlug: string, firm: AuditFirm, authHeader?: string) {
   const { workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  const cover = renderForFirm(workspace, firm);
 
   const summaryText = [
     `${workspace.tenant.name} Compliance Pack`,
@@ -1190,6 +1197,8 @@ function handleExportCompliancePack(state: AppState, tenantSlug: string, authHea
     processorCsv,
     evidenceManifest,
     noticeSnapshots: JSON.stringify(workspace.notices, null, 2),
+    cover,
+    firm,
   };
 }
 
@@ -1670,9 +1679,15 @@ export default {
       {
         const p = match("/api/portal/:slug/export/compliance-pack", pathname);
         if (request.method === "GET" && p) {
-          const pack = await withState(env, (s) => handleExportCompliancePack(s, p.slug, auth));
+          // Optional ?firm=kpmg|ey|pwc|deloitte|grantthornton|generic
+          // adds an auditor-flavoured cover + TOC + control-mapping +
+          // evidence-map alongside the standard CSV bundle. Default
+          // "generic" preserves the original 8-file shape (backwards-
+          // compatible for any existing pollers).
+          const firm = normaliseFirm(url.searchParams.get("firm"));
+          const pack = await withState(env, (s) => handleExportCompliancePack(s, p.slug, firm, auth));
           const boundary = "----CompliancePackBoundary";
-          const parts = [
+          const baseParts = [
             `--${boundary}\r\nContent-Disposition: attachment; filename="00-summary.txt"\r\nContent-Type: text/plain\r\n\r\n${pack.summary}`,
             `--${boundary}\r\nContent-Disposition: attachment; filename="data-register.csv"\r\nContent-Type: text/csv\r\n\r\n${pack.registerCsv}`,
             `--${boundary}\r\nContent-Disposition: attachment; filename="rights-cases.csv"\r\nContent-Type: text/csv\r\n\r\n${pack.rightsCsv}`,
@@ -1681,16 +1696,35 @@ export default {
             `--${boundary}\r\nContent-Disposition: attachment; filename="processor-list.csv"\r\nContent-Type: text/csv\r\n\r\n${pack.processorCsv}`,
             `--${boundary}\r\nContent-Disposition: attachment; filename="notice-snapshots.json"\r\nContent-Type: application/json\r\n\r\n${pack.noticeSnapshots}`,
             `--${boundary}\r\nContent-Disposition: attachment; filename="evidence-manifest.json"\r\nContent-Type: application/json\r\n\r\n${pack.evidenceManifest}`,
-            `--${boundary}--`,
-          ].join("\r\n");
+          ];
+          // Audit-firm-specific cover materials. The "generic" template
+          // still produces these files (uniform structure across all
+          // exports) so a customer can switch firms without re-tooling
+          // their downstream stitching pipeline.
+          const auditorParts = [
+            `--${boundary}\r\nContent-Disposition: attachment; filename="00-cover.md"\r\nContent-Type: text/markdown\r\n\r\n${pack.cover.coverLetterMarkdown}`,
+            `--${boundary}\r\nContent-Disposition: attachment; filename="01-toc.md"\r\nContent-Type: text/markdown\r\n\r\n${pack.cover.tocMarkdown}`,
+            `--${boundary}\r\nContent-Disposition: attachment; filename="02-control-mapping.md"\r\nContent-Type: text/markdown\r\n\r\n${pack.cover.controlMappingMarkdown}`,
+            `--${boundary}\r\nContent-Disposition: attachment; filename="03-evidence-map.md"\r\nContent-Type: text/markdown\r\n\r\n${pack.cover.evidenceMapMarkdown}`,
+          ];
+          const parts = [...auditorParts, ...baseParts, `--${boundary}--`].join("\r\n");
 
+          const fileName = `${p.slug}-compliance-pack${pack.cover.fileNameSuffix}`;
           return new Response(parts, {
             status: 200,
             headers: {
               "content-type": `multipart/mixed; boundary=${boundary}`,
-              "content-disposition": `attachment; filename="${p.slug}-compliance-pack"`,
+              "content-disposition": `attachment; filename="${fileName}"`,
+              "x-prooflyt-firm-template": firm,
             },
           });
+        }
+      }
+      {
+        // Discovery endpoint: list supported firms so the UI can render
+        // a dropdown without hard-coding values.
+        if (request.method === "GET" && pathname === "/api/portal/compliance-pack/firms") {
+          return json({ ok: true, firms: SUPPORTED_FIRMS });
         }
       }
 
