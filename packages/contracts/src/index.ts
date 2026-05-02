@@ -334,24 +334,35 @@ export interface AdminBootstrapResponse {
  */
 
 export type ConnectorType =
-  | "HUBSPOT"
-  | "RAZORPAY"
-  | "FRESHDESK"
-  | "ZOHO_CRM"
-  | "SHOPIFY"
-  | "POSTGRES"
-  | "MONGODB"
-  | "AWS_S3";
+  // Phase 1+2 (8)
+  | "HUBSPOT" | "RAZORPAY" | "FRESHDESK" | "ZOHO_CRM" | "SHOPIFY"
+  | "POSTGRES" | "MONGODB" | "AWS_S3"
+  // Phase 3A — 10 Indian-priority
+  | "GOOGLE_WORKSPACE" | "MOENGAGE" | "WEBENGAGE" | "CLEVERTAP"
+  | "GUPSHUP" | "EXOTEL" | "WHATSAPP_BUSINESS" | "CASHFREE"
+  | "PAYU" | "SHIPROCKET"
+  // Phase 3B — 10 global
+  | "MICROSOFT_365" | "MAILCHIMP" | "SENDGRID" | "TWILIO" | "STRIPE"
+  | "SALESFORCE" | "SLACK" | "GOOGLE_DRIVE" | "NOTION" | "ZENDESK"
+  // Phase 3C — 15 mid-priority
+  | "KLAVIYO" | "AUTH0" | "OKTA" | "FIREBASE_AUTH"
+  | "GOOGLE_ANALYTICS_4" | "MIXPANEL" | "AMPLITUDE" | "SEGMENT" | "POSTHOG"
+  | "PIPEDRIVE" | "LEADSQUARED" | "WOOCOMMERCE" | "MAGENTO" | "INTERCOM"
+  | "JIRA"
+  // Phase 3D — 15 final
+  | "PAYTM_BUSINESS" | "PHONEPE_BUSINESS" | "DELHIVERY" | "BLUEDART"
+  | "KEKA" | "DARWINBOX" | "BAMBOOHR" | "DROPBOX" | "ONEDRIVE"
+  | "MYSQL" | "SNOWFLAKE" | "BIGQUERY"
+  | "AMAZON_SELLER" | "FLIPKART_SELLER" | "UNICOMMERCE";
 
-export type ConnectorAuthType = "OAUTH2" | "API_KEY" | "CONNECTION_STRING" | "AWS_IAM";
+export type ConnectorAuthType =
+  | "OAUTH2" | "API_KEY" | "CONNECTION_STRING" | "AWS_IAM";
 
 export type ConnectorCategory =
-  | "CRM"
-  | "PAYMENTS"
-  | "HELPDESK"
-  | "ECOMMERCE"
-  | "DATABASE"
-  | "OBJECT_STORAGE";
+  | "CRM" | "PAYMENTS" | "HELPDESK" | "ECOMMERCE" | "DATABASE" | "OBJECT_STORAGE"
+  | "IDENTITY" | "MARKETING" | "COMMS" | "ANALYTICS"
+  | "MARKETPLACE" | "LOGISTICS" | "HR" | "COLLABORATION"
+  | "DATA_WAREHOUSE" | "STORAGE_DOC";
 
 export interface ConnectorDefinition {
   id: ConnectorType;
@@ -383,6 +394,18 @@ export interface ConnectorDefinition {
   brand: {
     logoText: string;
     accentColor: string;
+  };
+  // Per-connector demo + audit metadata. Replaces the per-type switch
+  // statements that previously lived in apps/api-worker/src/connectors.ts.
+  // Adding a connector now means appending one definition — nothing else.
+  serviceLabel: string;             // Vendor (Processor) entry "service" field
+  recordLabel: string;              // "customers" | "contacts" | "tickets" | …
+  simulatedRecordCount: number;     // discovery preview size (records scanned)
+  discoveryWarnings: string[];      // surfaced on Catalogue + post-discovery
+  purposeTemplate: string;          // includes "{category}" placeholder
+  simulatedDsr: {
+    exportCount: number;
+    eraseCount: number;             // 0 means "denied" (e.g. Razorpay §17(2)(a))
   };
 }
 

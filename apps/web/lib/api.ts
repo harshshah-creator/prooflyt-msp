@@ -1,5 +1,19 @@
 import "server-only";
-import type { AdminBootstrapResponse, PublicNoticeResponse, PublicRightsResponse, WorkspaceResponse } from "@prooflyt/contracts";
+import type {
+  AdminBootstrapResponse,
+  ConnectorConnectionPublic,
+  ConnectorDefinition,
+  ConnectorEvent,
+  PublicNoticeResponse,
+  PublicRightsResponse,
+  WorkspaceResponse,
+} from "@prooflyt/contracts";
+
+export interface ConnectorBootstrap {
+  catalogue: ConnectorDefinition[];
+  connections: ConnectorConnectionPublic[];
+  events: ConnectorEvent[];
+}
 
 export const API_BASE = process.env.PROOFLYT_API_BASE || "https://prooflyt-msp-api.harshshah-5d8.workers.dev/api";
 export const DEMO_TOKEN = process.env.PROOFLYT_DEMO_TOKEN || "session-user-arjun-boot";
@@ -30,6 +44,10 @@ async function apiFetch<T>(path: string, init?: RequestInit, token?: string | nu
 
 export async function getWorkspace(tenantSlug = "bombay-grooming-labs", token?: string | null) {
   return apiFetch<WorkspaceResponse>(`/portal/${tenantSlug}/bootstrap`, undefined, token || DEMO_TOKEN);
+}
+
+export async function getConnectorBootstrap(tenantSlug: string, token?: string | null) {
+  return apiFetch<ConnectorBootstrap>(`/portal/${tenantSlug}/connectors/bootstrap`, undefined, token || DEMO_TOKEN);
 }
 
 export async function getPublicRights(tenantSlug = "bombay-grooming-labs") {
