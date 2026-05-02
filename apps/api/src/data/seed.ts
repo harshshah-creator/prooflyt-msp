@@ -341,20 +341,10 @@ const resets: PasswordReset[] = [
   { token: "reset-arjun-demo", email: "arjun@bombaygrooming.com" },
 ];
 
-const sessions: SessionRecord[] = [
-  {
-    token: "session-user-arjun-boot",
-    userId: "user-arjun",
-    tenantSlug: tenant.slug,
-    createdAt: "2026-04-11T08:00:00.000Z",
-  },
-  {
-    token: "session-ops-boot",
-    userId: "ops-user",
-    tenantSlug: null,
-    createdAt: "2026-04-11T08:00:00.000Z",
-  },
-];
+// H1: do not seed eternal sessions. Users authenticate via /api/auth/login,
+// which mints a properly-bounded session record (12-hour absolute, 60-minute
+// idle expiry). The /admin/reset endpoint also wipes any prior sessions.
+const sessions: SessionRecord[] = [];
 
 export function createTenantWorkspace(tenantObj: Tenant): TenantWorkspace {
   return {
@@ -384,6 +374,8 @@ export function createTenantWorkspace(tenantObj: Tenant): TenantWorkspace {
     evidence: [],
     auditTrail: [],
     agentActions: [],
+    connections: [],
+    connectorEvents: [],
     metrics: {
       readinessScore: 0,
       ownerCoverage: 0,

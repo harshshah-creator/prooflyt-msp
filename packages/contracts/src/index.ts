@@ -22,7 +22,8 @@ export type ModuleId =
   | "processors"
   | "evidence"
   | "reports"
-  | "dpdp-reference";
+  | "dpdp-reference"
+  | "connectors";
 
 export interface PublicBrand {
   logoText: string;
@@ -86,6 +87,10 @@ export interface SessionRecord {
   userId: string;
   tenantSlug: string | null;
   createdAt: string;
+  /** ISO timestamp at which the session ceases to authenticate. */
+  expiresAt?: string;
+  /** ISO timestamp of last successful auth check, for sliding renewal. */
+  lastSeenAt?: string;
 }
 
 export interface ObligationBucket {
@@ -244,6 +249,8 @@ export interface TenantWorkspace {
   evidence: EvidenceArtifact[];
   auditTrail: AuditEvent[];
   agentActions: AgentAction[];
+  connections: ConnectorConnection[];
+  connectorEvents: ConnectorEvent[];
   metrics: MetricSummary;
 }
 
@@ -318,4 +325,184 @@ export interface AdminBootstrapResponse {
     };
   }>;
   masterLibrary: string[];
+}
+
+/* ── Connectors framework ─────────────────────────────────────
+ *  Phase 1: HUBSPOT, RAZORPAY, FRESHDESK
+ *  Phase 2: ZOHO_CRM, SHOPIFY, POSTGRES, MONGODB, AWS_S3
+ *  Each Connector is also auto-treated as a Processor (Section 8 governance).
+ */
+
+export type ConnectorType =
+  | "HUBSPOT"
+  | "RAZORPAY"
+  | "FRESHDESK"
+  | "ZOHO_CRM"
+  | "SHOPIFY"
+  | "POSTGRES"
+  | "MONGODB"
+  | "AWS_S3";
+
+export type ConnectorAuthType = "OAUTH2" | "API_KEY" | "CONNECTION_STRING" | "AWS_IAM";
+
+export type ConnectorCategory =
+  | "CRM"
+  | "PAYMENTS"
+  | "HELPDESK"
+  | "ECOMMERCE"
+  | "DATABASE"
+  | "OBJECT_STORAGE";
+
+export interface ConnectorDefinition {
+  id: ConnectorType;
+  name: string;
+  vendor: string;
+  category: ConnectorCategory;
+  authType: ConnectorAuthType;
+  apiBaseUrl: string;
+  // OAuth2-only
+  oauthAuthorizeUrl?: string;
+  oauthTokenUrl?: string;
+  oauthScopes?: string[];
+  // Capability flags
+  capabilities: {
+    discovery: boolean;
+    dsrAccess: boolean;
+    dsrErasure: boolean;
+    dsrCorrection: boolean;
+    grievanceIngest: boolean;
+    webhooks: boolean;
+    purgeProof: boolean;
+  };
+  // DPDP context
+  dpdpNotes: {
+    legalBasisFloor?: string;       // e.g. "RBI 5-year retention overrides DPDP erasure"
+    dataResidency?: string;         // e.g. "India (RBI mandated)"
+    indianFootprint?: string;       // marketing context
+  };
+  brand: {
+    logoText: string;
+    accentColor: string;
+  };
+}
+
+export type ConnectorConnectionStatus =
+  | "PENDING_AUTH"
+  | "CONNECTED"
+  | "REFRESHING"
+  | "REVOKED"
+  | "ERROR";
+
+export interface ConnectorConnection {
+  id: string;                          // conn-hubspot-{ts}
+  connectorType: ConnectorType;
+  tenantSlug: string;
+  displayName: string;                 // "HubSpot — Acme Production"
+  // Secrets (never returned to UI; redacted by sanitizer)
+  encryptedAccessToken?: string;
+  encryptedRefreshToken?: string;
+  encryptedApiKey?: string;
+  encryptedWebhookSecret?: string;
+  workspaceDomain?: string;            // freshdesk subdomain / shopify shop / zoho dc
+  accountIdentifier?: string;          // razorpay key_id (last 4) / aws access key (last 4)
+  region?: string;                     // aws region / mongo cluster region
+  bucketName?: string;                 // s3 bucket name
+  schemaScope?: string;                // postgres schema / mongo db name
+  accessTokenExpiresAt?: string;
+  // Linked records
+  linkedProcessorId?: string;
+  linkedSourceIds: string[];
+  linkedRegisterEntryIds: string[];
+  // State
+  status: ConnectorConnectionStatus;
+  lastError?: string;
+  lastDiscoveryAt?: string;
+  lastDsrAt?: string;
+  recordsDiscovered?: number;
+  scopesGranted?: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConnectorConnectionPublic {
+  id: string;
+  connectorType: ConnectorType;
+  displayName: string;
+  status: ConnectorConnectionStatus;
+  workspaceDomain?: string;
+  accountIdentifier?: string;
+  region?: string;
+  bucketName?: string;
+  schemaScope?: string;
+  linkedProcessorId?: string;
+  linkedSourceIds: string[];
+  linkedRegisterEntryIds: string[];
+  lastError?: string;
+  lastDiscoveryAt?: string;
+  lastDsrAt?: string;
+  recordsDiscovered?: number;
+  scopesGranted?: string[];
+  accessTokenExpiresAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ConnectorEventType =
+  | "DISCOVERY_COMPLETED"
+  | "GRIEVANCE_INGESTED"
+  | "DSR_EXPORT_COMPLETED"
+  | "DSR_ERASURE_COMPLETED"
+  | "DSR_ERASURE_DENIED"     // legal-basis denial (e.g. RBI retention)
+  | "WEBHOOK_RECEIVED"
+  | "TOKEN_REFRESHED"
+  | "CONNECTION_REVOKED";
+
+export interface ConnectorEvent {
+  id: string;
+  connectionId: string;
+  connectorType: ConnectorType;
+  eventType: ConnectorEventType;
+  externalId?: string;                 // ticket_id / contact_id / payment_id
+  linkedRightsId?: string;
+  linkedDeletionId?: string;
+  linkedEvidenceId?: string;
+  summary: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ConnectorDiscoveredField {
+  systemName: string;
+  fieldName: string;
+  category: string;                    // Identity | Contact | Financial | ...
+  identifierType: string;              // Direct identifier | Operational attribute
+  confidence: number;
+  legalBasisHint: string;
+  retentionHint: string;
+}
+
+export interface ConnectorDiscoveryResult {
+  connectionId: string;
+  connectorType: ConnectorType;
+  recordsScanned: number;
+  fieldsDiscovered: ConnectorDiscoveredField[];
+  autoCreatedSourceIds: string[];
+  autoCreatedRegisterIds: string[];
+  autoCreatedProcessorId?: string;
+  summary: string;
+  warnings: string[];
+}
+
+export interface ConnectorDsrResult {
+  connectionId: string;
+  connectorType: ConnectorType;
+  action: "EXPORT" | "ERASE";
+  subjectIdentifier: string;           // email / phone / customer_id
+  subjectKey: string;                  // "email" | "phone" | "id"
+  succeeded: boolean;
+  recordsAffected: number;
+  evidenceId?: string;
+  denialReason?: string;               // e.g. "RBI Section 17(2)(a) retention"
+  payloadSample?: Record<string, unknown>;
+  occurredAt: string;
 }

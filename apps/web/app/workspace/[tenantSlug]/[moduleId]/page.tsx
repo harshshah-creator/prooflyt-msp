@@ -16,7 +16,9 @@ const validModules: ModuleId[] = [
   "incidents",
   "processors",
   "evidence",
+  "connectors",
   "reports",
+  "dpdp-reference",
 ];
 
 export default async function WorkspaceModulePage({

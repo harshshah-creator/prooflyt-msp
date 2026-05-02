@@ -343,3 +343,114 @@ export async function createNoticeAction(tenantSlug: string, formData: FormData)
   revalidatePath(`/workspace/${tenantSlug}/notices`);
   redirect(`/workspace/${tenantSlug}/notices?updated=notice`);
 }
+
+/* ── Connectors ────────────────────────────────────────────────── */
+
+type ConnectorType =
+  | "HUBSPOT"
+  | "RAZORPAY"
+  | "FRESHDESK"
+  | "ZOHO_CRM"
+  | "SHOPIFY"
+  | "POSTGRES"
+  | "MONGODB"
+  | "AWS_S3";
+
+export async function startOAuthConnectorAction(
+  tenantSlug: string,
+  type: ConnectorType,
+) {
+  const response = await authenticatedJsonPost(
+    `/portal/${tenantSlug}/connectors/oauth/start`,
+    { type },
+  );
+  if (!response.ok) {
+    redirect(`/workspace/${tenantSlug}/connectors?error=oauth-start`);
+  }
+  const body = (await response.json()) as { authorizeUrl: string; state: string };
+  redirect(body.authorizeUrl);
+}
+
+export async function connectApiKeyConnectorAction(
+  tenantSlug: string,
+  type: ConnectorType,
+  formData: FormData,
+) {
+  const apiKey = String(formData.get("apiKey") || "").trim();
+  const apiKeyId = String(formData.get("apiKeyId") || "").trim() || undefined;
+  const domain = String(formData.get("domain") || "").trim() || undefined;
+  const region = String(formData.get("region") || "").trim() || undefined;
+  const bucket = String(formData.get("bucket") || "").trim() || undefined;
+  const schemaScope = String(formData.get("schemaScope") || "").trim() || undefined;
+  const webhookSecret = String(formData.get("webhookSecret") || "").trim() || undefined;
+  const displayName = String(formData.get("displayName") || "").trim() || undefined;
+  if (!apiKey) {
+    redirect(`/workspace/${tenantSlug}/connectors?error=missing-key`);
+  }
+  const response = await authenticatedJsonPost(
+    `/portal/${tenantSlug}/connectors/api-key`,
+    { type, apiKey, apiKeyId, domain, region, bucket, schemaScope, webhookSecret, displayName },
+  );
+  if (!response.ok) {
+    redirect(`/workspace/${tenantSlug}/connectors?error=connect-failed`);
+  }
+  revalidatePath(`/workspace/${tenantSlug}/connectors`);
+  redirect(`/workspace/${tenantSlug}/connectors?updated=connector-connected`);
+}
+
+export async function runConnectorDiscoveryAction(
+  tenantSlug: string,
+  connectionId: string,
+) {
+  const response = await authenticatedJsonPost(
+    `/portal/${tenantSlug}/connectors/${connectionId}/discover`,
+    {},
+  );
+  if (!response.ok) {
+    redirect(`/workspace/${tenantSlug}/connectors?error=discovery-failed`);
+  }
+  revalidatePath(`/workspace/${tenantSlug}/connectors`);
+  revalidatePath(`/workspace/${tenantSlug}/register`);
+  revalidatePath(`/workspace/${tenantSlug}/sources`);
+  revalidatePath(`/workspace/${tenantSlug}/processors`);
+  redirect(`/workspace/${tenantSlug}/connectors?updated=discovery-completed`);
+}
+
+export async function runConnectorDsrAction(
+  tenantSlug: string,
+  connectionId: string,
+  formData: FormData,
+) {
+  const rightsCaseId = String(formData.get("rightsCaseId") || "").trim();
+  const action = (String(formData.get("action") || "EXPORT").trim() as "EXPORT" | "ERASE");
+  const subjectIdentifier = String(formData.get("subjectIdentifier") || "").trim();
+  if (!rightsCaseId || !subjectIdentifier) {
+    redirect(`/workspace/${tenantSlug}/connectors?error=dsr-missing-fields`);
+  }
+  const response = await authenticatedJsonPost(
+    `/portal/${tenantSlug}/connectors/${connectionId}/dsr`,
+    { rightsCaseId, action, subjectIdentifier },
+  );
+  if (!response.ok) {
+    redirect(`/workspace/${tenantSlug}/connectors?error=dsr-failed`);
+  }
+  revalidatePath(`/workspace/${tenantSlug}/connectors`);
+  revalidatePath(`/workspace/${tenantSlug}/rights`);
+  revalidatePath(`/workspace/${tenantSlug}/evidence`);
+  redirect(`/workspace/${tenantSlug}/connectors?updated=dsr-completed`);
+}
+
+export async function revokeConnectorAction(
+  tenantSlug: string,
+  connectionId: string,
+) {
+  const response = await authenticatedJsonPost(
+    `/portal/${tenantSlug}/connectors/${connectionId}/revoke`,
+    {},
+  );
+  if (!response.ok) {
+    redirect(`/workspace/${tenantSlug}/connectors?error=revoke-failed`);
+  }
+  revalidatePath(`/workspace/${tenantSlug}/connectors`);
+  redirect(`/workspace/${tenantSlug}/connectors?updated=connector-revoked`);
+}

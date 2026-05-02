@@ -35,6 +35,42 @@ import {
   confidenceForHeader,
 } from "@prooflyt/mapping";
 import { generateBreachActions, generateRightsActions, generateBreachActionsWithGroq, generateRightsActionsWithGroq } from "@prooflyt/agents";
+import {
+  CONNECTOR_DEFINITIONS,
+  buildAuthorizeUrl,
+  exchangeOAuthCode,
+  createOAuthConnection,
+  createApiKeyConnection,
+  revokeConnection,
+  performDiscovery,
+  performDsr,
+  ingestWebhook,
+  verifyWebhookSignature,
+  handleConnectorBootstrap,
+  publicConnection,
+  ValidationError,
+  validateApiKeyConnectorPayload,
+  mintOAuthState,
+  consumeOAuthState,
+} from "./connectors.js";
+import type { ConnectorType } from "@prooflyt/contracts";
+
+/* ------------------------------------------------------------------ */
+/*  Connectors module — shared role check (security: C4)               */
+/* ------------------------------------------------------------------ */
+const CONNECTORS_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+  "AUDITOR",
+];
+
+function requireConnectorRole(user: User): void {
+  if (user.internalAdmin) return; // platform-ops is always allowed.
+  if (!CONNECTORS_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Connectors module is restricted by role.");
+  }
+}
 
 type Env = {
   PROOFLYT_RUNTIME: DurableObjectNamespace<ProoflytRuntime>;
@@ -42,29 +78,65 @@ type Env = {
   TURNSTILE_SECRET?: string;
   GROQ_API_KEY?: string;
   GROQ_MODEL?: string;
+  HUBSPOT_CLIENT_ID?: string;
+  HUBSPOT_CLIENT_SECRET?: string;
+  CONNECTORS_MASTER_SECRET?: string;
+  CONNECTORS_REDIRECT_URI?: string;
 };
 
 /* ------------------------------------------------------------------ */
 /*  Utility helpers                                                    */
 /* ------------------------------------------------------------------ */
 
+/**
+ *  Allow-list of origins permitted to read responses via CORS.
+ *  L3: replaced wildcard `*` with strict allow-list. Bearer tokens are not
+ *  cookie-bound, but `*` lets any browser execute fetch() and read the JSON.
+ */
+const CORS_ALLOWED_ORIGINS = new Set<string>([
+  "https://prooflyt-msp.vercel.app",
+  "http://localhost:3000",
+  "http://localhost:3001",
+]);
+
+function corsHeadersFor(origin: string | null): Record<string, string> {
+  const allow = origin && CORS_ALLOWED_ORIGINS.has(origin) ? origin : "https://prooflyt-msp.vercel.app";
+  return {
+    "access-control-allow-origin": allow,
+    "vary": "Origin",
+    "access-control-allow-headers": "Authorization, Content-Type",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+  };
+}
+
+let _currentOrigin: string | null = null;
+
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "access-control-allow-origin": "*",
-      "access-control-allow-headers": "Authorization, Content-Type",
-      "access-control-allow-methods": "GET, POST, OPTIONS",
+      ...corsHeadersFor(_currentOrigin),
     },
   });
 }
 
+/**
+ *  H2: do not echo internal Error.message to clients. Map known typed errors
+ *  to clean status codes; for everything else return a generic 500 with a
+ *  short trace id and log the real error server-side via console.error.
+ */
 function errorResponse(error: unknown) {
   if (error instanceof HttpError) {
     return json({ error: error.message }, error.status);
   }
-  return json({ error: error instanceof Error ? error.message : "Unknown error" }, 500);
+  if (error instanceof ValidationError) {
+    return json({ error: error.message }, 400);
+  }
+  // Unknown error — never leak the message.
+  const traceId = crypto.randomUUID().slice(0, 8);
+  console.error(`[traceId=${traceId}]`, error);
+  return json({ error: "Internal error.", traceId }, 500);
 }
 
 async function parseBody<T>(request: Request) {
@@ -94,6 +166,8 @@ function ensureWorkspaceShape(workspace: TenantWorkspace) {
   workspace.agentActions = workspace.agentActions || [];
   workspace.departments = workspace.departments || [];
   workspace.sourceSystems = workspace.sourceSystems || [];
+  workspace.connections = workspace.connections || [];
+  workspace.connectorEvents = workspace.connectorEvents || [];
   workspace.sources = workspace.sources.map((source) => ({
     pushedToRegister: false,
     linkedRegisterEntryIds: [],
@@ -116,18 +190,47 @@ function sanitizeWorkspace(workspace: TenantWorkspace) {
   return {
     ...workspace,
     team: workspace.team.map((member) => sanitizeUser(member)),
+    connections: (workspace.connections || []).map((c) => sanitizeConnection(c)),
   };
+}
+
+function sanitizeConnection(c: TenantWorkspace["connections"][number]) {
+  // Strip every encrypted secret before sending to the UI.
+  const {
+    encryptedAccessToken: _a,
+    encryptedRefreshToken: _r,
+    encryptedApiKey: _k,
+    encryptedWebhookSecret: _w,
+    ...safe
+  } = c;
+  return safe;
 }
 
 function nextId(prefix: string, count: number) {
   return `${prefix}-${Date.now()}-${count + 1}`;
 }
 
+/** H1: bearer-token sessions are time-bounded and slide on use. */
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;       // 12-hour absolute expiry
+const SESSION_IDLE_MS = 60 * 60 * 1000;           // 60-minute idle timeout
+
 function requireSession(state: AppState, authHeader?: string) {
   const token = authHeader?.replace(/^Bearer\s+/i, "").trim();
   if (!token) throw new HttpError(401, "Missing bearer token.");
   const session = state.sessions.find((item) => item.token === token);
   if (!session) throw new HttpError(401, "Unknown session.");
+
+  // H1: Enforce expiry. Reject and prune the record so a leaked token is finite.
+  const now = Date.now();
+  const created = new Date(session.createdAt).getTime();
+  const lastSeen = session.lastSeenAt ? new Date(session.lastSeenAt).getTime() : created;
+  const expiresAt = session.expiresAt ? new Date(session.expiresAt).getTime() : created + SESSION_TTL_MS;
+  if (now >= expiresAt || now - lastSeen >= SESSION_IDLE_MS) {
+    state.sessions = state.sessions.filter((s) => s.token !== token);
+    throw new HttpError(401, "Session expired.");
+  }
+  session.lastSeenAt = new Date(now).toISOString();
+
   const user = state.users.find((item) => item.id === session.userId);
   if (!user) throw new HttpError(401, "Session user no longer exists.");
   return { session, user };
@@ -239,15 +342,23 @@ async function verifyTurnstile(env: Env, token: string | null) {
 /*  Auth handlers                                                      */
 /* ------------------------------------------------------------------ */
 
+function freshSession(userId: string, tenantSlug: string | null): SessionRecord {
+  const now = new Date();
+  return {
+    // H1: high-entropy session token (replaces predictable Date.now() suffix).
+    token: `sess_${crypto.randomUUID().replace(/-/g, "")}_${userId}`,
+    userId,
+    tenantSlug,
+    createdAt: now.toISOString(),
+    lastSeenAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString(),
+  };
+}
+
 async function handleLogin(state: AppState, body: { email: string; password: string }) {
   const user = state.users.find((c) => c.email.toLowerCase() === body.email.toLowerCase());
   if (!user || user.password !== body.password) throw new HttpError(401, "Invalid credentials.");
-  const session: SessionRecord = {
-    token: `session-${user.id}-${Date.now()}`,
-    userId: user.id,
-    tenantSlug: user.tenantSlug,
-    createdAt: new Date().toISOString(),
-  };
+  const session = freshSession(user.id, user.tenantSlug);
   state.sessions.push(session);
   return { session, user: sanitizeUser(user), tenant: user.tenantSlug ? state.workspaces[user.tenantSlug]?.tenant : null };
 }
@@ -268,12 +379,7 @@ function handleAcceptInvite(state: AppState, body: { token: string; password: st
   };
   state.users.push(user);
   ensureWorkspace(state, invite.tenantSlug).team.push(user);
-  const session: SessionRecord = {
-    token: `session-${user.id}-${Date.now()}`,
-    userId: user.id,
-    tenantSlug: user.tenantSlug,
-    createdAt: new Date().toISOString(),
-  };
+  const session = freshSession(user.id, user.tenantSlug);
   state.sessions.push(session);
   return { session, user: sanitizeUser(user), tenant: user.tenantSlug ? state.workspaces[user.tenantSlug]?.tenant : null };
 }
@@ -293,6 +399,11 @@ function handleConfirmReset(state: AppState, body: { token: string; password: st
   const user = state.users.find((e) => e.email === reset.email);
   if (!user) throw new HttpError(404, "User not found.");
   user.password = body.password;
+  // H1: invalidate every existing session for this user so a leaked bearer
+  //     cannot survive a password change.
+  state.sessions = state.sessions.filter((s) => s.userId !== user.id);
+  // Burn the reset token after use so it's strictly single-use.
+  state.resets = state.resets.filter((r) => r.token !== reset.token);
   return { ok: true };
 }
 
@@ -305,7 +416,12 @@ function handleLogout(state: AppState, authHeader?: string) {
 
 function handleRefresh(state: AppState, authHeader?: string) {
   const { session, user } = requireSession(state, authHeader);
-  return { session, user: sanitizeUser(user), tenant: user.tenantSlug ? state.workspaces[user.tenantSlug]?.tenant : null };
+  // H1: rotate the bearer on refresh — limits the half-life of any leaked token
+  //     while preserving the active workflow.
+  state.sessions = state.sessions.filter((s) => s.token !== session.token);
+  const rotated = freshSession(user.id, user.tenantSlug);
+  state.sessions.push(rotated);
+  return { session: rotated, user: sanitizeUser(user), tenant: user.tenantSlug ? state.workspaces[user.tenantSlug]?.tenant : null };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1225,14 +1341,14 @@ export default {
     const url = new URL(request.url);
     const { pathname } = url;
     const auth = request.headers.get("authorization") || undefined;
+    // L3: capture origin so json()/errorResponse() can echo a strict allow-list.
+    _currentOrigin = request.headers.get("origin");
 
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
         headers: {
-          "access-control-allow-origin": "*",
-          "access-control-allow-headers": "Authorization, Content-Type",
-          "access-control-allow-methods": "GET, POST, OPTIONS",
+          ...corsHeadersFor(_currentOrigin),
           "access-control-max-age": "86400",
         },
       });
@@ -1575,6 +1691,190 @@ export default {
               "content-disposition": `attachment; filename="${p.slug}-compliance-pack"`,
             },
           });
+        }
+      }
+
+      /* ---------- Connectors ---------- */
+      {
+        const p = match("/api/portal/:slug/connectors/bootstrap", pathname);
+        if (request.method === "GET" && p) {
+          return json(
+            await withState(env, (s) => {
+              const { user, workspace } = ensureTenantAccess(s, p.slug, auth);
+              requireConnectorRole(user); // C4
+              return handleConnectorBootstrap(workspace);
+            }),
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/connectors/oauth/start", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{ type: unknown }>(request);
+          if (typeof body.type !== "string" || !(body.type in CONNECTOR_DEFINITIONS)) {
+            throw new ValidationError("Unknown connector type."); // H3
+          }
+          const type = body.type as ConnectorType;
+          return json(
+            await withState(env, (s) => {
+              const { user, workspace } = ensureTenantAccess(s, p.slug, auth);
+              requireConnectorRole(user); // C4
+              const nonce = mintOAuthState(workspace, type); // C1: persist nonce server-side
+              const url = buildAuthorizeUrl(type, env, nonce);
+              return { authorizeUrl: url, state: nonce };
+            }),
+          );
+        }
+      }
+      if (request.method === "POST" && pathname === "/api/connectors/oauth/callback") {
+        const body = await parseBody<{ code: unknown; state: unknown }>(request);
+        if (typeof body.code !== "string" || typeof body.state !== "string") {
+          throw new ValidationError("Missing OAuth code or state.");
+        }
+        // Two-phase: (1) consume nonce from state (read-and-validate),
+        // (2) call vendor token endpoint outside the DO write,
+        // (3) write the connection in a second state pass.
+        const lookup = await withState(env, (s) => {
+          // Locate the workspace whose nonce store contains this state.
+          for (const slug of Object.keys(s.workspaces)) {
+            const ws = ensureWorkspace(s, slug);
+            try {
+              const r = consumeOAuthState(ws, body.state as string); // C1
+              return { ...r, slug };
+            } catch { /* not in this workspace, try next */ }
+          }
+          throw new HttpError(401, "OAuth state is missing, expired, or already consumed.");
+        });
+        // H4: type is now from the server-persisted record, not the URL.
+        const tokenResp = await exchangeOAuthCode(lookup.type, body.code, env);
+        return json(
+          await withState(env, async (s) => {
+            const { user, workspace } = ensureTenantAccess(s, lookup.tenantSlug, auth);
+            requireConnectorRole(user); // C4
+            const conn = await createOAuthConnection(workspace, lookup.type, tokenResp, env, user);
+            return publicConnection(conn);
+          }),
+          201,
+        );
+      }
+      {
+        const p = match("/api/portal/:slug/connectors/api-key", pathname);
+        if (request.method === "POST" && p) {
+          const raw = await parseBody<any>(request);
+          // H3: runtime validation. Throws ValidationError → mapped to 400.
+          const { type, clean } = validateApiKeyConnectorPayload(raw?.type, raw);
+          return json(
+            await withState(env, async (s) => {
+              const { user, workspace } = ensureTenantAccess(s, p.slug, auth);
+              requireConnectorRole(user); // C4
+              const conn = await createApiKeyConnection(workspace, type, clean, env, user);
+              return publicConnection(conn);
+            }),
+            201,
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/connectors/:connectionId/discover", pathname);
+        if (request.method === "POST" && p) {
+          return json(
+            await withState(env, (s) => {
+              const { user, workspace } = ensureTenantAccess(s, p.slug, auth);
+              requireConnectorRole(user); // C4
+              const conn = workspace.connections.find((c) => c.id === p.connectionId);
+              if (!conn) throw new HttpError(404, "Connection not found.");
+              return performDiscovery(workspace, conn, user);
+            }),
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/connectors/:connectionId/dsr", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{
+            rightsCaseId?: unknown;
+            action?: unknown;
+            subjectIdentifier?: unknown;
+          }>(request);
+          // H3: validate inputs at the route boundary.
+          const rightsCaseId = typeof body.rightsCaseId === "string" ? body.rightsCaseId.trim() : "";
+          const action = body.action === "EXPORT" || body.action === "ERASE" ? body.action : null;
+          const subjectIdentifier = typeof body.subjectIdentifier === "string" ? body.subjectIdentifier.trim() : "";
+          if (!rightsCaseId || !action || !subjectIdentifier || subjectIdentifier.length > 320) {
+            throw new ValidationError("Invalid DSR request body.");
+          }
+          return json(
+            await withState(env, (s) => {
+              const { user, workspace } = ensureTenantAccess(s, p.slug, auth);
+              requireConnectorRole(user); // C4
+              const conn = workspace.connections.find((c) => c.id === p.connectionId);
+              if (!conn) throw new HttpError(404, "Connection not found.");
+              const rightsCase = workspace.rightsCases.find((r) => r.id === rightsCaseId);
+              if (!rightsCase) throw new HttpError(404, "Rights case not found.");
+              return performDsr(workspace, conn, rightsCase, action, subjectIdentifier, user);
+            }),
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/connectors/:connectionId/revoke", pathname);
+        if (request.method === "POST" && p) {
+          return json(
+            await withState(env, (s) => {
+              const { user, workspace } = ensureTenantAccess(s, p.slug, auth);
+              requireConnectorRole(user); // C4
+              revokeConnection(workspace, p.connectionId, user);
+              return { ok: true };
+            }),
+          );
+        }
+      }
+      // Public webhook ingress — verified by HMAC, not by session.
+      {
+        const p = match("/api/connectors/webhook/:type/:slug/:connectionId", pathname);
+        if (request.method === "POST" && p) {
+          const rawBody = await request.text();
+          if (rawBody.length > 256 * 1024) { // DoS guard: 256 KiB cap
+            throw new ValidationError("Webhook body exceeds 256 KiB.");
+          }
+          const sigHeader =
+            request.headers.get("x-razorpay-signature") ||
+            request.headers.get("x-shopify-hmac-sha256") ||
+            request.headers.get("x-hubspot-signature-v3") ||
+            request.headers.get("x-freshdesk-signature") ||
+            request.headers.get("x-prooflyt-signature");
+          const type = String(p.type || "").toUpperCase() as ConnectorType;
+          if (!CONNECTOR_DEFINITIONS[type]) return json({ error: "Unknown connector" }, 400);
+
+          // H5: master secret must be configured for any signed webhook flow.
+          if (!env.CONNECTORS_MASTER_SECRET) {
+            console.error("[webhook] CONNECTORS_MASTER_SECRET is missing; rejecting.");
+            throw new HttpError(500, "Webhook ingress not configured.");
+          }
+
+          return json(
+            await withState(env, async (s) => {
+              const workspace = ensureWorkspace(s, p.slug);
+              const conn = workspace.connections.find((c) => c.id === p.connectionId);
+              if (!conn) throw new HttpError(404, "Connection not found.");
+              // C3: fail-closed if no webhook secret has been registered.
+              if (!conn.encryptedWebhookSecret) {
+                throw new HttpError(401, "Connection has no webhook secret registered.");
+              }
+              const { openSecret } = await import("./connectors.js");
+              const secret = await openSecret(conn.encryptedWebhookSecret, env.CONNECTORS_MASTER_SECRET!);
+              const ok = await verifyWebhookSignature(type, rawBody, sigHeader, secret);
+              if (!ok) throw new HttpError(401, "Webhook signature mismatch.");
+              let parsed: unknown;
+              try {
+                parsed = JSON.parse(rawBody || "{}");
+              } catch {
+                throw new ValidationError("Webhook body is not valid JSON.");
+              }
+              const result = ingestWebhook(workspace, conn, { type, body: parsed });
+              return { ok: true, eventId: result.event.id, rightsCaseId: result.createdRights?.id };
+            }),
+          );
         }
       }
 

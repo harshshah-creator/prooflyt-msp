@@ -18,6 +18,7 @@ import {
   updateRightsCaseAction,
   updateSetupProfileAction,
 } from "../app/workspace/actions";
+import { ConnectorsView } from "./connectors-view";
 import { EvidenceUploadForm } from "./evidence-upload-form";
 import { SourceUploadForm } from "./source-upload-form";
 
@@ -201,6 +202,7 @@ export function ModuleView({
     evidence: { title: "Sealed evidence library", body: "Search metadata, not artifact contents, and keep a clean audit boundary." },
     reports: { title: "Reports and Compliance Pack", body: "Export regulator-facing material without rebuilding the story every time." },
     "dpdp-reference": { title: "DPDP Act Reference", body: "India's Digital Personal Data Protection Act 2023 and Rules 2025 — obligations, penalties, and Prooflyt coverage." },
+    connectors: { title: "Third-party connectors", body: "Connect payment gateways, CRMs, helpdesks, storefronts, application databases, and object storage. Auto-discover PII, fulfil DSRs, ingest grievance tickets — with sealed proof at every step." },
   };
 
   return (
@@ -977,6 +979,8 @@ export function ModuleView({
           </div>
         </section>
       )}
+
+      {moduleId === "connectors" && <ConnectorsView data={data} />}
 
       {moduleId === "dpdp-reference" && (
         <section className="worksheet">
