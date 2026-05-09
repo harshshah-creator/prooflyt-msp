@@ -1057,7 +1057,49 @@ button, input, textarea, select { font: inherit; color: inherit; }
   filter: brightness(0.92);
 }
 
-/* ── DSR portal callouts (PR #4) — preserved alongside branding ── */
+/* ── Public-surface i18n switcher (PR #12) ────────────────────────
+ * Renders a small inline row of native-script language pills under the
+ * brand header. Active language gets a filled pill so a reviewer sees
+ * at a glance which translation is being audited. */
+.locale-switcher {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+  font-size: 0.78rem;
+  color: var(--ink-4);
+}
+.locale-switcher__label {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.locale-switcher ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.locale-switcher__link {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  color: var(--ink-2);
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.6);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.locale-switcher__link:hover { border-color: rgba(0, 0, 0, 0.18); }
+.locale-switcher__link.is-active {
+  background: var(--ink);
+  color: var(--surface-1);
+  border-color: var(--ink);
+}
+
+/* ── DSR portal callouts (PR #4) ───────────────────────────────── */
 .callout-success {
   margin: 1rem 0; padding: 0.75rem 1rem; border-radius: 8px;
   background: rgba(124, 154, 66, 0.12); border: 1px solid rgba(124, 154, 66, 0.4);
