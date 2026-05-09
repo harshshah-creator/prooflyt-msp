@@ -88,6 +88,14 @@ import {
   runRetentionForAllTenants,
   type EnforceOptions,
 } from "./retention-enforcement.js";
+import {
+  ingestConsentArtefact,
+  revokeArtefact,
+  findArtefactsByCustomer,
+  ensureConsentArtefactsArray,
+  isActive as aaIsActive,
+  summariseAccess as summariseAaArtefact,
+} from "./consent-manager-sahamati.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
 /* ------------------------------------------------------------------ */
@@ -117,6 +125,12 @@ type Env = {
   HUBSPOT_CLIENT_SECRET?: string;
   CONNECTORS_MASTER_SECRET?: string;
   CONNECTORS_REDIRECT_URI?: string;
+  // Sahamati AA Consent Manager — when both are set we hit the live ReBIT
+  // /Consent/fetch endpoint; when unset, the adapter runs deterministic
+  // simulations so demos and tests behave the same per consentHandle.
+  SAHAMATI_AA_BASE_URL?: string;
+  SAHAMATI_FIU_ID?: string;
+  SAHAMATI_AA_PUBLIC_KEY_SPKI_B64?: string;
 };
 
 /* ------------------------------------------------------------------ */
@@ -1240,6 +1254,129 @@ function handleAnomalyList(state: AppState, tenantSlug: string, authHeader?: str
 }
 
 /* ------------------------------------------------------------------ */
+/*  Sahamati AA Consent Manager (DPDP §7 + §8(8))                       */
+/* ------------------------------------------------------------------ */
+
+const AA_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+  "AUDITOR",
+];
+
+function requireAaRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!AA_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Account Aggregator endpoints are restricted by role.");
+  }
+}
+
+async function handleAaIngest(
+  state: AppState,
+  tenantSlug: string,
+  body: { consentHandle?: string; replay?: any },
+  authHeader: string | undefined,
+  env: Env,
+) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAaRole(user);
+  const handle = (body?.consentHandle || "").trim();
+  if (!handle && !body?.replay) {
+    throw new HttpError(400, "consentHandle is required.");
+  }
+  const result = await ingestConsentArtefact(workspace, {
+    consentHandle: handle || (body?.replay?.consentHandle ?? ""),
+    baseUrl: env.SAHAMATI_AA_BASE_URL,
+    fiuId: env.SAHAMATI_FIU_ID,
+    aaPublicKeySpkiB64: env.SAHAMATI_AA_PUBLIC_KEY_SPKI_B64,
+    prefetched: body?.replay,
+  });
+  appendAudit(
+    workspace,
+    user,
+    "processors",
+    "AA_CONSENT_INGESTED",
+    result.artefact.id,
+    `AA artefact ${result.artefact.consentId} ingested (${result.source}, signature ${result.artefact.signatureValid ? "valid" : "INVALID"}).`,
+  );
+  return {
+    ok: true,
+    source: result.source,
+    artefact: {
+      ...result.artefact,
+      // Don't return the customer raw id over the wire; Prooflyt UI uses the masked field.
+      customerId: undefined,
+    },
+    summary: summariseAaArtefact(result.artefact),
+  };
+}
+
+function handleAaList(state: AppState, tenantSlug: string, authHeader: string | undefined) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAaRole(user);
+  const list = ensureConsentArtefactsArray(workspace);
+  const safe = list.map((a) => ({
+    ...a,
+    customerId: undefined,
+    rawArtefactJws: a.rawArtefactJws.length > 64 ? `${a.rawArtefactJws.slice(0, 32)}…(${a.rawArtefactJws.length} chars)` : a.rawArtefactJws,
+    active: aaIsActive(a),
+    summary: summariseAaArtefact(a),
+  }));
+  return { ok: true, count: safe.length, artefacts: safe };
+}
+
+function handleAaRevoke(
+  state: AppState,
+  tenantSlug: string,
+  body: { consentHandle: string; rightsCaseId?: string },
+  authHeader: string | undefined,
+) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAaRole(user);
+  if (!body?.consentHandle) throw new HttpError(400, "consentHandle is required.");
+  const target = revokeArtefact(workspace, body.consentHandle, body.rightsCaseId);
+  if (!target) throw new HttpError(404, "Consent artefact not found for that handle.");
+  appendAudit(
+    workspace,
+    user,
+    "processors",
+    "AA_CONSENT_REVOKED",
+    target.id,
+    `AA artefact ${target.consentId} revoked for ${target.customerIdMasked}.`,
+  );
+  return { ok: true, artefact: { ...target, customerId: undefined, summary: summariseAaArtefact(target) } };
+}
+
+function handleAaWithdrawCustomer(
+  state: AppState,
+  tenantSlug: string,
+  body: { customerId: string; rightsCaseId?: string },
+  authHeader: string | undefined,
+) {
+  // Bridge from §6 (consent withdrawal) into the AA layer: revoke every
+  // artefact a given VUA has issued to this tenant, in one call. Used by
+  // the rights officer when closing a WITHDRAWAL case.
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAaRole(user);
+  if (!body?.customerId) throw new HttpError(400, "customerId is required.");
+  const matches = findArtefactsByCustomer(workspace, body.customerId);
+  const revoked: string[] = [];
+  for (const a of matches) {
+    const r = revokeArtefact(workspace, a.consentHandle, body.rightsCaseId);
+    if (r) revoked.push(r.consentId);
+  }
+  appendAudit(
+    workspace,
+    user,
+    "rights",
+    "AA_CONSENT_WITHDRAWAL_BULK",
+    body.rightsCaseId ?? body.customerId,
+    `Revoked ${revoked.length} AA artefact(s) under §6 withdrawal.`,
+  );
+  return { ok: true, revokedCount: revoked.length, revokedConsentIds: revoked };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Processor updates                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -2095,6 +2232,40 @@ export default {
             const ws = workspace as any;
             return { dpiaResults: ws.dpiaResults || [] };
           }));
+        }
+      }
+
+      /* ---------- Sahamati AA Consent Manager ---------- */
+      {
+        // Pull a fresh consent artefact from the AA (or the deterministic
+        // simulator) and persist it. Wraps the artefact JSON as evidence.
+        const p = match("/api/portal/:slug/consent-manager/aa/ingest", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{ consentHandle?: string; replay?: any }>(request);
+          return json(await withState(env, (s) => handleAaIngest(s, p.slug, body, auth, env)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/consent-manager/aa/list", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => handleAaList(s, p.slug, auth)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/consent-manager/aa/revoke", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{ consentHandle: string; rightsCaseId?: string }>(request);
+          return json(await withState(env, (s) => handleAaRevoke(s, p.slug, body, auth)));
+        }
+      }
+      {
+        // Bulk revocation for a single VUA — used when closing a §6
+        // withdrawal rights case so all of that customer's AA consents
+        // get retired in one transaction.
+        const p = match("/api/portal/:slug/consent-manager/aa/withdraw-customer", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{ customerId: string; rightsCaseId?: string }>(request);
+          return json(await withState(env, (s) => handleAaWithdrawCustomer(s, p.slug, body, auth)));
         }
       }
 
