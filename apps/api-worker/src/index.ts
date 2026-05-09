@@ -82,6 +82,7 @@ import {
   listPersistedAlerts,
 } from "./audit-anomaly.js";
 import { issueConsentReceipt, renderConsentWidgetJs } from "./consent-widget.js";
+import { scanForPii, scanForPiiSmart } from "./pii-scanner.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
 /* ------------------------------------------------------------------ */
@@ -1730,6 +1731,27 @@ export default {
         const p = match("/api/portal/:slug/sources/:sourceId/approve", pathname);
         if (request.method === "POST" && p) {
           return json(await withState(env, (s) => handleApproveSource(s, p.slug, p.sourceId, auth)));
+        }
+      }
+      // AI PII scanner — accepts arbitrary text (extracted upstream from
+      // PDF/Excel/Word/email body) and returns India-specific PII hits +
+      // a severity bucket + a quarantine recommendation. Body capped at 1 MB.
+      {
+        const p = match("/api/portal/:slug/scan/pii", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{ text: string; smart?: boolean }>(request);
+          if (typeof body.text !== "string") throw new ValidationError("text is required");
+          if (body.text.length > 1_000_000) throw new ValidationError("text exceeds 1 MB cap");
+          // Role gate inherited from connectors flow — only privileged roles
+          // can run scans (results may include masked-but-real PII).
+          await withState(env, async (s) => {
+            const { user } = ensureTenantAccess(s, p.slug, auth);
+            requireConnectorRole(user);
+          });
+          const result = body.smart
+            ? await scanForPiiSmart(body.text, env)
+            : scanForPii(body.text);
+          return json(result);
         }
       }
 
