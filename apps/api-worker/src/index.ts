@@ -61,6 +61,14 @@ import {
   persistDpaOutput,
   findConnectorDefForProcessor,
 } from "./dpa-generator.js";
+import {
+  enrichAllRightsCases,
+  enrichRightsCase,
+  summariseSla,
+  flagSlaEscalations,
+  flagSlaEscalationsAcrossTenants,
+  STATUTORY_WINDOWS_DAYS,
+} from "./dsr-sla.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
 /* ------------------------------------------------------------------ */
@@ -969,6 +977,40 @@ function handleIncidentUpdate(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Rights SLA snapshot + escalation                                    */
+/* ------------------------------------------------------------------ */
+
+function handleRightsSlaSnapshot(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  return {
+    ok: true,
+    summary: summariseSla(workspace),
+    cases: enrichAllRightsCases(workspace),
+    statutoryWindows: STATUTORY_WINDOWS_DAYS,
+  };
+}
+
+const RIGHTS_SLA_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+  "AUDITOR",
+];
+
+function handleRightsSlaEscalate(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  if (!user.internalAdmin && !RIGHTS_SLA_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "SLA escalation is restricted by role.");
+  }
+  const outcomes = flagSlaEscalations(workspace);
+  if (outcomes.length > 0) {
+    appendAudit(workspace, user, "rights", "RIGHTS_SLA_ESCALATION_RUN", tenantSlug,
+      `Escalated ${outcomes.length} case(s).`);
+  }
+  return { ok: true, outcomes };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Processor updates                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -1598,6 +1640,20 @@ export default {
         if (request.method === "POST" && p) {
           const body = await parseBody<any>(request);
           return json(await withState(env, (s) => handleRightsUpdate(s, p.slug, p.caseId, body, auth)));
+        }
+      }
+      // SLA-enriched rights cases for the workspace (read-only).
+      {
+        const p = match("/api/portal/:slug/rights/sla", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => handleRightsSlaSnapshot(s, p.slug, auth)));
+        }
+      }
+      // Manual escalation pass (also runs nightly via cron).
+      {
+        const p = match("/api/portal/:slug/rights/sla/escalate", pathname);
+        if (request.method === "POST" && p) {
+          return json(await withState(env, (s) => handleRightsSlaEscalate(s, p.slug, auth)));
         }
       }
 
