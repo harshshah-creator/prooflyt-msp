@@ -76,6 +76,11 @@ import {
   authenticateExportKey,
   exportAuditWindow,
 } from "./audit-export.js";
+import {
+  detectAnomalies,
+  persistAlerts,
+  listPersistedAlerts,
+} from "./audit-anomaly.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
 /* ------------------------------------------------------------------ */
@@ -985,6 +990,12 @@ function handleIncidentUpdate(
 
 /* ------------------------------------------------------------------ */
 <<<<<<< HEAD
+/*  Audit-trail anomaly detection                                       */
+/* ------------------------------------------------------------------ */
+
+const ANOMALY_ALLOWED_ROLES: Role[] = [
+=======
+<<<<<<< HEAD
 /*  Audit-log SIEM export                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1104,12 +1115,47 @@ function handleRightsSlaSnapshot(state: AppState, tenantSlug: string, authHeader
 }
 
 const RIGHTS_SLA_ALLOWED_ROLES: Role[] = [
+>>>>>>> origin/main
   "TENANT_ADMIN",
   "COMPLIANCE_MANAGER",
   "SECURITY_OWNER",
   "AUDITOR",
 ];
 
+<<<<<<< HEAD
+function requireAnomalyRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!ANOMALY_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Anomaly detection is restricted by role.");
+  }
+}
+
+function handleAnomalyScan(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAnomalyRole(user);
+  const report = detectAnomalies(workspace);
+  const fresh = persistAlerts(workspace, report.alerts);
+  // Emit one audit entry per FRESH alert so webhooks fan out only on
+  // newly-detected anomalies (no duplicate Slack pings on every scan).
+  for (const alert of fresh) {
+    appendAudit(
+      workspace,
+      user,
+      "incidents",          // closest module bucket; surfaces in DPO inbox
+      `ANOMALY_${alert.kind}`,
+      alert.id,
+      `[${alert.severity}] ${alert.detail}`,
+    );
+  }
+  return { ok: true, report, freshAlertCount: fresh.length };
+}
+
+function handleAnomalyList(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAnomalyRole(user);
+  const persisted = listPersistedAlerts(workspace);
+  return { ok: true, count: persisted.length, alerts: persisted };
+=======
 function handleRightsSlaEscalate(state: AppState, tenantSlug: string, authHeader?: string) {
   const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
   if (!user.internalAdmin && !RIGHTS_SLA_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
@@ -1121,6 +1167,7 @@ function handleRightsSlaEscalate(state: AppState, tenantSlug: string, authHeader
       `Escalated ${outcomes.length} case(s).`);
   }
   return { ok: true, outcomes };
+>>>>>>> origin/main
 >>>>>>> origin/main
 }
 
@@ -1800,6 +1847,22 @@ export default {
         if (request.method === "POST" && p) {
           const body = await parseBody<any>(request);
           return json(await withState(env, (s) => handleIncidentUpdate(s, p.slug, p.incidentId, body, auth)));
+        }
+      }
+
+      /* ---------- Anomaly detection ---------- */
+      {
+        // Run a fresh scan over the audit trail and persist new alerts.
+        // Idempotent: alerts are de-duped by stable id (kind+actor+window).
+        const p = match("/api/portal/:slug/anomalies/scan", pathname);
+        if (request.method === "POST" && p) {
+          return json(await withState(env, (s) => handleAnomalyScan(s, p.slug, auth)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/anomalies", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => handleAnomalyList(s, p.slug, auth)));
         }
       }
 
