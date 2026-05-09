@@ -82,8 +82,14 @@ const CATEGORY_PROCESSING_TYPE: Record<ConnectorCategory, string> = {
 
 export function generateDpa(input: DpaGeneratorInput): DpaGeneratorOutput {
   const def = input.connectorDefinition;
-  const cat: ConnectorCategory | "UNKNOWN" = (def?.category as ConnectorCategory) || "UNKNOWN";
-  const processingType = cat !== "UNKNOWN" ? CATEGORY_PROCESSING_TYPE[cat] : "Processing of personal data on behalf of the Data Fiduciary";
+  // ConnectorCategory is a string-literal union; "UNKNOWN" is a sentinel
+  // for processors with no matching connector. Use a guard so TS narrows
+  // both branches correctly.
+  const rawCat = def?.category;
+  const processingType = rawCat
+    ? CATEGORY_PROCESSING_TYPE[rawCat]
+    : "Processing of personal data on behalf of the Data Fiduciary";
+  const cat: ConnectorCategory | "UNKNOWN" = rawCat ?? "UNKNOWN";
 
   const crossBorder = !!def?.dpdpNotes.dataResidency && /(US|EU|Canada|UK|Singapore|outside india|cross[- ]border)/i.test(def.dpdpNotes.dataResidency);
   const legalBasisFloor = def?.dpdpNotes.legalBasisFloor ?? null;
