@@ -425,24 +425,61 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ *  SSRF defence. Webhook URLs are tenant-supplied and we POST signed
+ *  payloads to them, so a permissive validator is the difference between
+ *  "tenants can hit Slack" and "tenants can pivot to our cloud's
+ *  instance-metadata service and steal credentials".
+ *
+ *  We block:
+ *   - Localhost / loopback (4 + 6)
+ *   - RFC1918 private space (10/8, 172.16/12, 192.168/16)
+ *   - Link-local 169.254/16 — covers AWS IMDS (169.254.169.254)
+ *   - Azure Instance Metadata (168.63.129.16, fixed IP)
+ *   - Cloud-metadata HOSTNAMES that resolve to those IPs even if the
+ *     attacker uses the friendly name
+ *   - mDNS .local
+ *   - IPv6 loopback + link-local (fe80::/10)
+ *
+ *  Anything else (any public hostname/IP) is allowed — we trust DNS to
+ *  not resolve to private space, but explicitly listing the fixed cloud
+ *  metadata hostnames is the belt-and-braces step that defends against a
+ *  malicious tenant who pastes a metadata URL directly.
+ */
+const SSRF_BLOCKED_HOSTNAMES = new Set([
+  "metadata.google.internal",
+  "metadata.goog",
+  "metadata",
+  "metadata.azure.com",
+  "metadata.platformequinix.com",
+  "instance-data",
+  "instance-data.ec2.internal",
+]);
+
 function validateUrl(raw: string) {
   const url = new URL(raw); // throws on garbage
   if (url.protocol !== "https:") {
     throw new Error("Webhook URL must be HTTPS.");
   }
-  // Block obvious SSRF targets.
-  const host = url.hostname;
+  const host = url.hostname.toLowerCase();
   if (
     host === "localhost" ||
     host.endsWith(".local") ||
     host === "127.0.0.1" ||
     host === "0.0.0.0" ||
     host === "::1" ||
+    host === "[::1]" ||
+    host.startsWith("fe80:") ||              // IPv6 link-local
+    host.startsWith("[fe80:") ||
     /^10\./.test(host) ||
     /^192\.168\./.test(host) ||
-    /^169\.254\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+    /^169\.254\./.test(host) ||              // AWS IMDS + general link-local v4
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    host === "168.63.129.16" ||              // Azure Instance Metadata fixed IP
+    host === "100.100.100.200" ||            // Alibaba Cloud metadata
+    SSRF_BLOCKED_HOSTNAMES.has(host) ||
+    host.endsWith(".internal")               // *.internal catch-all (GCE/AWS/etc.)
   ) {
-    throw new Error("Webhook URL points at a private/internal host.");
+    throw new Error("Webhook URL points at a private/internal host or cloud metadata service.");
   }
 }
