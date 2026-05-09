@@ -285,9 +285,16 @@ export async function scanForPiiSmart(
   const baseline = scanForPii(text);
   if (!env.GROQ_API_KEY || text.length > 8000) return baseline;
 
+  // 8-second hard timeout so a slow/failing Groq call cannot hold the
+  // entire worker request open. Cloudflare's wall-clock cap is 30s; we
+  // want plenty of headroom for the rest of the request to complete and
+  // the regex baseline to still be returned.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
   try {
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
+      signal: controller.signal,
       headers: {
         Authorization: `Bearer ${env.GROQ_API_KEY}`,
         "content-type": "application/json",
@@ -307,6 +314,7 @@ export async function scanForPiiSmart(
         ],
       }),
     });
+    clearTimeout(timeoutId);
     if (!r.ok) return baseline;
     const j = (await r.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const content = j.choices?.[0]?.message?.content;
@@ -328,6 +336,10 @@ export async function scanForPiiSmart(
     baseline.categoriesPresent = Array.from(new Set(baseline.hits.map((h) => h.category)));
     return baseline;
   } catch {
+    // Includes AbortError (timeout) — fall back to regex-only baseline so
+    // a slow Groq round-trip never breaks the scan.
     return baseline;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
