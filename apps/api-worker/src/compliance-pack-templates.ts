@@ -305,7 +305,39 @@ function renderEvidenceMap(workspace: TenantWorkspace, profile: FirmProfile): st
   return lines.join("\n");
 }
 
+/**
+ *  Markdown-cell escaper. The cover sheet is auditor-rendered Markdown,
+ *  not HTML, so XSS isn't the threat. The threat is a malicious tenant
+ *  user putting `[phishing](http://evil)` in their tenant name and
+ *  having it render as a clickable link in the auditor's Markdown
+ *  viewer. We neutralise:
+ *    * pipe `|`            — would break the table
+ *    * newline             — would break the row
+ *    * backslash + space   — preserves intent
+ *    * backtick `` ` ``    — would render as inline code
+ *    * brackets `[` `]`    — would form `[text](url)` links
+ *    * parentheses `(` `)` — same
+ *    * hash `#`            — would render as a heading if line-leading
+ *    * angle brackets      — would render as autolinks or HTML
+ *    * leading `>`         — blockquote
+ *    * leading `-` / `*`   — list item
+ *  We backslash-escape rather than strip so the original character is
+ *  still visible to a human reader.
+ */
 function escapeMd(s: string | undefined | null): string {
   if (!s) return "—";
-  return s.replace(/\|/g, "\\|").replace(/\n/g, " ");
+  return s
+    .replace(/\\/g, "\\\\")           // escape escapes first
+    .replace(/\|/g, "\\|")
+    .replace(/`/g, "\\`")
+    .replace(/\[/g, "\\[")
+    .replace(/]/g, "\\]")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)")
+    .replace(/#/g, "\\#")
+    .replace(/</g, "\\<")
+    .replace(/>/g, "\\>")
+    .replace(/^[-*+]/, "\\$&")        // leading list-item char
+    .replace(/^>/, "\\>")             // leading blockquote
+    .replace(/\n/g, " ");
 }

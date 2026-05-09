@@ -53,6 +53,58 @@ import {
   mintOAuthState,
   consumeOAuthState,
 } from "./connectors.js";
+import { analyzeNoticeAgainstRule3, draftMissingItems } from "./notice-rule3.js";
+import { runDpia, persistDpia } from "./dpia.js";
+import { buildDpoInbox } from "./dpo-inbox.js";
+import {
+  generateDpa,
+  persistDpaOutput,
+  findConnectorDefForProcessor,
+} from "./dpa-generator.js";
+import {
+  enrichAllRightsCases,
+  enrichRightsCase,
+  summariseSla,
+  flagSlaEscalations,
+  flagSlaEscalationsAcrossTenants,
+  STATUTORY_WINDOWS_DAYS,
+} from "./dsr-sla.js";
+import {
+  createAuditExportKey,
+  revokeAuditExportKey,
+  listAuditExportKeysPublic,
+  authenticateExportKey,
+  exportAuditWindow,
+} from "./audit-export.js";
+import {
+  detectAnomalies,
+  persistAlerts,
+  listPersistedAlerts,
+} from "./audit-anomaly.js";
+import { issueConsentReceipt, renderConsentWidgetJs } from "./consent-widget.js";
+import { scanForPii, scanForPiiSmart } from "./pii-scanner.js";
+import {
+  enforceRetention,
+  runRetentionForAllTenants,
+  type EnforceOptions,
+} from "./retention-enforcement.js";
+import {
+  ingestConsentArtefact,
+  revokeArtefact,
+  findArtefactsByCustomer,
+  ensureConsentArtefactsArray,
+  isActive as aaIsActive,
+  summariseAccess as summariseAaArtefact,
+} from "./consent-manager-sahamati.js";
+import {
+  registerSubscription as registerWebhookSubscription,
+  listSubscriptionsPublic as listWebhookSubscriptions,
+  deleteSubscription as deleteWebhookSubscription,
+  pauseSubscription as pauseWebhookSubscription,
+  resumeSubscription as resumeWebhookSubscription,
+  fireWebhooks,
+  ensureWebhookArrays,
+} from "./webhooks-outbound.js";
 import {
   renderForFirm,
   normaliseFirm,
@@ -88,6 +140,12 @@ type Env = {
   HUBSPOT_CLIENT_SECRET?: string;
   CONNECTORS_MASTER_SECRET?: string;
   CONNECTORS_REDIRECT_URI?: string;
+  // Sahamati AA Consent Manager — when both are set we hit the live ReBIT
+  // /Consent/fetch endpoint; when unset, the adapter runs deterministic
+  // simulations so demos and tests behave the same per consentHandle.
+  SAHAMATI_AA_BASE_URL?: string;
+  SAHAMATI_FIU_ID?: string;
+  SAHAMATI_AA_PUBLIC_KEY_SPKI_B64?: string;
 };
 
 /* ------------------------------------------------------------------ */
@@ -274,6 +332,45 @@ function appendAudit(
     summary,
   };
   workspace.auditTrail.unshift(event);
+  // Queue an outbound webhook fan-out at the end of this request. The
+  // queue lives on the workspace object as a non-enumerable property so
+  // it never gets serialised back to durable storage; withState() drains
+  // it after putState() and ships deliveries via ctx.waitUntil().
+  enqueueWebhookEvent(workspace, `${module}.${action}`, {
+    auditId: event.id,
+    actor: event.actor,
+    targetId: event.targetId,
+    summary: event.summary,
+    occurredAt: event.createdAt,
+  });
+}
+
+/**
+ *  Per-workspace, request-scoped queue of webhook events. Stored as a
+ *  non-enumerable property so JSON.stringify (durable-object putState)
+ *  doesn't persist it. Drained in withState() after the state write.
+ */
+const PENDING_WEBHOOK_KEY = "__pendingWebhookEvents";
+interface PendingWebhookEvent { eventType: string; body: unknown }
+
+function enqueueWebhookEvent(workspace: TenantWorkspace, eventType: string, body: unknown) {
+  const ws = workspace as unknown as Record<string, PendingWebhookEvent[] | undefined>;
+  if (!ws[PENDING_WEBHOOK_KEY]) {
+    Object.defineProperty(ws, PENDING_WEBHOOK_KEY, {
+      value: [] as PendingWebhookEvent[],
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  }
+  ws[PENDING_WEBHOOK_KEY]!.push({ eventType, body });
+}
+
+function drainPendingWebhookEvents(workspace: TenantWorkspace): PendingWebhookEvent[] {
+  const ws = workspace as unknown as Record<string, PendingWebhookEvent[] | undefined>;
+  const queue = ws[PENDING_WEBHOOK_KEY] ?? [];
+  ws[PENDING_WEBHOOK_KEY] = [];
+  return queue;
 }
 
 function updateObligation(workspace: TenantWorkspace, module: ModuleId, fields: Partial<TenantWorkspace["obligations"][number]>) {
@@ -939,6 +1036,64 @@ function handleDeletionUpdate(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Retention enforcement (cron + manual)                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ *  Roles allowed to inspect or trigger retention enforcement. Same gate as
+ *  other connector-touching workflows (security: C4 parity).
+ */
+const RETENTION_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+  "AUDITOR",
+];
+
+function requireRetentionRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!RETENTION_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Retention enforcement is restricted by role.");
+  }
+}
+
+function handleRetentionPreview(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireRetentionRole(user);
+  // Dry run: never mutate state.
+  const report = enforceRetention(workspace, { dryRun: true });
+  return { ok: true, report };
+}
+
+function handleRetentionRun(
+  state: AppState,
+  tenantSlug: string,
+  body: { taskIds?: string[]; dryRun?: boolean },
+  authHeader?: string,
+) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireRetentionRole(user);
+  const dryRun = Boolean(body?.dryRun);
+  const opts: EnforceOptions = {
+    dryRun,
+    taskIds: Array.isArray(body?.taskIds) && body!.taskIds!.length > 0 ? body!.taskIds : undefined,
+  };
+  const report = enforceRetention(workspace, opts);
+  if (!dryRun) {
+    appendAudit(
+      workspace,
+      user,
+      "retention",
+      "RETENTION_ENFORCEMENT_RUN",
+      tenantSlug,
+      `Manual retention run: erased=${report.erased}, denied=${report.denied}, pending=${report.pending}.`,
+    );
+    syncMetrics(workspace);
+  }
+  return { ok: true, report };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Incident updates                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -964,6 +1119,422 @@ function handleIncidentUpdate(
   });
   syncMetrics(workspace);
   return { ok: true, incident };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Audit-log SIEM export                                              */
+/* ------------------------------------------------------------------ */
+
+const AUDIT_EXPORT_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+];
+
+function requireAuditExportRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!AUDIT_EXPORT_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Audit-export key management is restricted by role.");
+  }
+}
+
+function handleAuditKeyList(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAuditExportRole(user);
+  return { ok: true, keys: listAuditExportKeysPublic(workspace) };
+}
+
+async function handleAuditKeyCreate(
+  state: AppState,
+  tenantSlug: string,
+  body: { label?: string },
+  authHeader?: string,
+) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAuditExportRole(user);
+  if (!body?.label) throw new HttpError(400, "label is required.");
+  let result;
+  try {
+    result = await createAuditExportKey(workspace, body.label, user.id);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+  appendAudit(workspace, user, "setup", "AUDIT_EXPORT_KEY_CREATED", result.key.id,
+    `Audit export key minted for "${result.key.label}".`);
+  // The raw key is returned ONCE here. Subsequent list calls only show the hint.
+  return {
+    ok: true,
+    key: {
+      id: result.key.id,
+      label: result.key.label,
+      createdAt: result.key.createdAt,
+    },
+    rawKey: result.rawKey,
+    integrationHints: {
+      splunkHec: `Headers: { Authorization: \"Bearer ${result.rawKey}\" } → POST endpoint accepts NDJSON`,
+      datadog: `Bearer this key on the upstream collector; we emit one JSON object per line.`,
+      curl: `curl -H 'authorization: Bearer ${result.rawKey}' '<API_BASE>/api/audit-export/stream?since=2026-01-01T00:00:00Z'`,
+    },
+  };
+}
+
+function handleAuditKeyRevoke(state: AppState, tenantSlug: string, keyId: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAuditExportRole(user);
+  const ok = revokeAuditExportKey(workspace, keyId);
+  if (!ok) throw new HttpError(404, "Key not found.");
+  appendAudit(workspace, user, "setup", "AUDIT_EXPORT_KEY_REVOKED", keyId,
+    `Audit export key ${keyId} revoked.`);
+  return { ok: true };
+}
+
+async function handleAuditStream(
+  env: Env,
+  request: Request,
+  request_in: { since?: string; limit?: number },
+) {
+  const auth = request.headers.get("authorization") || "";
+  const m = /^Bearer\s+(\S+)$/i.exec(auth);
+  if (!m) {
+    return new Response("Missing Authorization: Bearer …", {
+      status: 401,
+      headers: { ...corsHeadersFor(_currentOrigin), "content-type": "text/plain" },
+    });
+  }
+  const rawKey = m[1];
+  const fromIp = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for") ?? undefined;
+  return await withState(env, (s) => streamForKey(s, rawKey, fromIp, request_in));
+
+  async function streamForKey(state: AppState, key: string, ip: string | undefined, opts: { since?: string; limit?: number }) {
+    const auth = await authenticateExportKey(state.workspaces, key, ip);
+    if (auth.ok === false) {
+      return new Response(auth.reason, {
+        status: auth.status,
+        headers: { ...corsHeadersFor(_currentOrigin), "content-type": "text/plain" },
+      });
+    }
+    const result = exportAuditWindow(auth.workspace, opts, auth.key);
+    return new Response(result.body, {
+      status: 200,
+      headers: {
+        ...corsHeadersFor(_currentOrigin),
+        "content-type": "application/x-ndjson; charset=utf-8",
+        "x-prooflyt-count": String(result.count),
+        "x-prooflyt-next-cursor": result.nextCursor ?? "",
+        "x-prooflyt-exhausted": result.exhausted ? "true" : "false",
+        "cache-control": "no-store",
+      },
+    });
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Rights SLA snapshot + escalation                                    */
+/* ------------------------------------------------------------------ */
+
+const RIGHTS_SLA_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+  "AUDITOR",
+];
+
+function handleRightsSlaSnapshot(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  return {
+    ok: true,
+    summary: summariseSla(workspace),
+    cases: enrichAllRightsCases(workspace),
+    statutoryWindows: STATUTORY_WINDOWS_DAYS,
+  };
+}
+
+function handleRightsSlaEscalate(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  if (!user.internalAdmin && !RIGHTS_SLA_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "SLA escalation is restricted by role.");
+  }
+  const outcomes = flagSlaEscalations(workspace);
+  if (outcomes.length > 0) {
+    appendAudit(workspace, user, "rights", "RIGHTS_SLA_ESCALATION_RUN", tenantSlug,
+      `Escalated ${outcomes.length} case(s).`);
+  }
+  return { ok: true, outcomes };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Audit-trail anomaly detection                                       */
+/* ------------------------------------------------------------------ */
+
+const ANOMALY_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+  "AUDITOR",
+];
+
+function requireAnomalyRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!ANOMALY_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Anomaly detection is restricted by role.");
+  }
+}
+
+function handleAnomalyScan(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAnomalyRole(user);
+  const report = detectAnomalies(workspace);
+  const fresh = persistAlerts(workspace, report.alerts);
+  // Emit one audit entry per FRESH alert so webhooks fan out only on
+  // newly-detected anomalies (no duplicate Slack pings on every scan).
+  for (const alert of fresh) {
+    appendAudit(
+      workspace,
+      user,
+      "incidents",          // closest module bucket; surfaces in DPO inbox
+      `ANOMALY_${alert.kind}`,
+      alert.id,
+      `[${alert.severity}] ${alert.detail}`,
+    );
+  }
+  return { ok: true, report, freshAlertCount: fresh.length };
+}
+
+function handleAnomalyList(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAnomalyRole(user);
+  const persisted = listPersistedAlerts(workspace);
+  return { ok: true, count: persisted.length, alerts: persisted };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Sahamati AA Consent Manager (DPDP §7 + §8(8))                       */
+/* ------------------------------------------------------------------ */
+
+const AA_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+  "AUDITOR",
+];
+
+function requireAaRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!AA_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Account Aggregator endpoints are restricted by role.");
+  }
+}
+
+async function handleAaIngest(
+  state: AppState,
+  tenantSlug: string,
+  body: { consentHandle?: string; replay?: any },
+  authHeader: string | undefined,
+  env: Env,
+) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAaRole(user);
+  const handle = (body?.consentHandle || "").trim();
+  if (!handle && !body?.replay) {
+    throw new HttpError(400, "consentHandle is required.");
+  }
+  const result = await ingestConsentArtefact(workspace, {
+    consentHandle: handle || (body?.replay?.consentHandle ?? ""),
+    baseUrl: env.SAHAMATI_AA_BASE_URL,
+    fiuId: env.SAHAMATI_FIU_ID,
+    aaPublicKeySpkiB64: env.SAHAMATI_AA_PUBLIC_KEY_SPKI_B64,
+    prefetched: body?.replay,
+  });
+  appendAudit(
+    workspace,
+    user,
+    "processors",
+    "AA_CONSENT_INGESTED",
+    result.artefact.id,
+    `AA artefact ${result.artefact.consentId} ingested (${result.source}, signature ${result.artefact.signatureValid ? "valid" : "INVALID"}).`,
+  );
+  return {
+    ok: true,
+    source: result.source,
+    artefact: {
+      ...result.artefact,
+      // Don't return the customer raw id over the wire; Prooflyt UI uses the masked field.
+      customerId: undefined,
+    },
+    summary: summariseAaArtefact(result.artefact),
+  };
+}
+
+function handleAaList(state: AppState, tenantSlug: string, authHeader: string | undefined) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAaRole(user);
+  const list = ensureConsentArtefactsArray(workspace);
+  const safe = list.map((a) => ({
+    ...a,
+    customerId: undefined,
+    rawArtefactJws: a.rawArtefactJws.length > 64 ? `${a.rawArtefactJws.slice(0, 32)}…(${a.rawArtefactJws.length} chars)` : a.rawArtefactJws,
+    active: aaIsActive(a),
+    summary: summariseAaArtefact(a),
+  }));
+  return { ok: true, count: safe.length, artefacts: safe };
+}
+
+function handleAaRevoke(
+  state: AppState,
+  tenantSlug: string,
+  body: { consentHandle: string; rightsCaseId?: string },
+  authHeader: string | undefined,
+) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAaRole(user);
+  if (!body?.consentHandle) throw new HttpError(400, "consentHandle is required.");
+  const target = revokeArtefact(workspace, body.consentHandle, body.rightsCaseId);
+  if (!target) throw new HttpError(404, "Consent artefact not found for that handle.");
+  appendAudit(
+    workspace,
+    user,
+    "processors",
+    "AA_CONSENT_REVOKED",
+    target.id,
+    `AA artefact ${target.consentId} revoked for ${target.customerIdMasked}.`,
+  );
+  return { ok: true, artefact: { ...target, customerId: undefined, summary: summariseAaArtefact(target) } };
+}
+
+function handleAaWithdrawCustomer(
+  state: AppState,
+  tenantSlug: string,
+  body: { customerId: string; rightsCaseId?: string },
+  authHeader: string | undefined,
+) {
+  // Bridge from §6 (consent withdrawal) into the AA layer: revoke every
+  // artefact a given VUA has issued to this tenant, in one call. Used by
+  // the rights officer when closing a WITHDRAWAL case.
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAaRole(user);
+  if (!body?.customerId) throw new HttpError(400, "customerId is required.");
+  const matches = findArtefactsByCustomer(workspace, body.customerId);
+  const revoked: string[] = [];
+  for (const a of matches) {
+    const r = revokeArtefact(workspace, a.consentHandle, body.rightsCaseId);
+    if (r) revoked.push(r.consentId);
+  }
+  appendAudit(
+    workspace,
+    user,
+    "rights",
+    "AA_CONSENT_WITHDRAWAL_BULK",
+    body.rightsCaseId ?? body.customerId,
+    `Revoked ${revoked.length} AA artefact(s) under §6 withdrawal.`,
+  );
+  return { ok: true, revokedCount: revoked.length, revokedConsentIds: revoked };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Outbound webhook subscriptions                                      */
+/* ------------------------------------------------------------------ */
+
+const WEBHOOK_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+];
+
+function requireWebhookRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!WEBHOOK_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Webhook configuration is restricted by role.");
+  }
+}
+
+function handleWebhookList(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  return { ok: true, subscriptions: listWebhookSubscriptions(workspace) };
+}
+
+async function handleWebhookCreate(
+  state: AppState,
+  tenantSlug: string,
+  body: { url?: string; eventFilter?: string; secret?: string; description?: string },
+  authHeader: string | undefined,
+  env: Env,
+) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  if (!env.CONNECTORS_MASTER_SECRET) {
+    throw new HttpError(503, "Webhook secret sealing is not configured (CONNECTORS_MASTER_SECRET missing).");
+  }
+  if (!body?.url) throw new HttpError(400, "url is required.");
+  if (!body?.eventFilter) throw new HttpError(400, "eventFilter is required.");
+  if (!body?.secret) throw new HttpError(400, "secret is required.");
+  let sub;
+  try {
+    sub = await registerWebhookSubscription(workspace, {
+      url: body.url,
+      eventFilter: body.eventFilter,
+      description: body.description,
+      rawSecret: body.secret,
+      masterSecret: env.CONNECTORS_MASTER_SECRET,
+    }, user);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+  appendAudit(workspace, user, "setup", "WEBHOOK_SUBSCRIPTION_CREATED", sub.id,
+    `Webhook subscription registered for ${body.url} (filter: ${body.eventFilter}).`);
+  return {
+    ok: true,
+    subscription: {
+      id: sub.id, url: sub.url, eventFilter: sub.eventFilter, description: sub.description,
+      active: sub.active, createdAt: sub.createdAt, updatedAt: sub.updatedAt,
+    },
+  };
+}
+
+function handleWebhookDelete(state: AppState, tenantSlug: string, id: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  const removed = deleteWebhookSubscription(workspace, id);
+  if (!removed) throw new HttpError(404, "Subscription not found.");
+  appendAudit(workspace, user, "setup", "WEBHOOK_SUBSCRIPTION_DELETED", id,
+    `Webhook subscription ${id} deleted.`);
+  return { ok: true };
+}
+
+function handleWebhookPause(state: AppState, tenantSlug: string, id: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  const sub = pauseWebhookSubscription(workspace, id, "Paused by operator.");
+  if (!sub) throw new HttpError(404, "Subscription not found.");
+  appendAudit(workspace, user, "setup", "WEBHOOK_SUBSCRIPTION_PAUSED", id,
+    `Webhook subscription ${id} paused.`);
+  return { ok: true, subscription: { id: sub.id, active: sub.active, pausedReason: sub.pausedReason } };
+}
+
+function handleWebhookResume(state: AppState, tenantSlug: string, id: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  const sub = resumeWebhookSubscription(workspace, id);
+  if (!sub) throw new HttpError(404, "Subscription not found.");
+  appendAudit(workspace, user, "setup", "WEBHOOK_SUBSCRIPTION_RESUMED", id,
+    `Webhook subscription ${id} resumed.`);
+  return { ok: true, subscription: { id: sub.id, active: sub.active } };
+}
+
+function handleWebhookDeliveries(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireWebhookRole(user);
+  const { deliveries } = ensureWebhookArrays(workspace);
+  return {
+    ok: true,
+    count: deliveries.length,
+    deliveries: deliveries.slice(0, 100).map((d) => ({
+      id: d.id, subscriptionId: d.subscriptionId, eventType: d.eventType,
+      status: d.status, httpStatus: d.httpStatus, attempts: d.attempts,
+      lastError: d.lastError, createdAt: d.createdAt, deliveredAt: d.deliveredAt,
+      payloadSha256: d.payloadSha256,
+    })),
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1304,12 +1875,24 @@ export class ProoflytRuntime extends DurableObject {
   }
 }
 
+/**
+ *  Request-scoped ExecutionContext, set by `fetch` so that withState can
+ *  fire-and-forget webhook deliveries via ctx.waitUntil. If unset (e.g.
+ *  scheduled handler), webhook drain is awaited inline so we don't
+ *  silently drop events.
+ */
+// Inline shape mirrors Cloudflare's ExecutionContext so the file
+// typechecks without @cloudflare/workers-types in the workspace.
+type WorkerExecutionContext = { waitUntil(promise: Promise<unknown>): void };
+let _currentCtx: WorkerExecutionContext | undefined;
+
 async function withState<T>(env: Env, fn: (state: AppState) => Promise<T> | T) {
   const id = env.PROOFLYT_RUNTIME.idFromName("default");
   const stub = env.PROOFLYT_RUNTIME.get(id);
   const state = await stub.getState();
   const result = await fn(state);
   await stub.putState(state);
+  await dispatchPendingWebhooks(env, state);
   return result;
 }
 
@@ -1319,7 +1902,51 @@ async function withRuntime<T>(env: Env, fn: (state: AppState, runtime: ProoflytR
   const state = await stub.getState();
   const result = await fn(state, stub);
   await stub.putState(state);
+  await dispatchPendingWebhooks(env, state);
   return result;
+}
+
+/**
+ *  Drain the in-memory webhook queue across every workspace touched in
+ *  this request. Each workspace's queue is per-request (non-enumerable
+ *  property), so this is safe to run on every request even if no events
+ *  were emitted.
+ */
+async function dispatchPendingWebhooks(env: Env, state: AppState) {
+  if (!env.CONNECTORS_MASTER_SECRET) return; // no master secret = sealing impossible; skip silently
+  const allPromises: Promise<void>[] = [];
+  for (const slug of Object.keys(state.workspaces)) {
+    const ws = state.workspaces[slug];
+    if (!ws) continue;
+    const queue = drainPendingWebhookEvents(ws);
+    for (const ev of queue) {
+      const promises = fireWebhooks(ws, {
+        eventType: ev.eventType,
+        body: ev.body,
+        env: { masterSecret: env.CONNECTORS_MASTER_SECRET },
+      });
+      for (const p of promises) allPromises.push(p);
+    }
+  }
+  if (allPromises.length === 0) return;
+  // Persist any delivery-record updates (success/failure flags) by
+  // awaiting then writing state again. We do this only when there was
+  // actual work, to avoid the round-trip on cold paths.
+  const settle = Promise.allSettled(allPromises).then(async () => {
+    try {
+      const id = env.PROOFLYT_RUNTIME.idFromName("default");
+      const stub = env.PROOFLYT_RUNTIME.get(id);
+      await stub.putState(state);
+    } catch {
+      // best-effort: durable write may race with another handler; the
+      // delivery log is observability, not a system-of-record.
+    }
+  });
+  if (_currentCtx) {
+    _currentCtx.waitUntil(settle);
+  } else {
+    await settle;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1346,12 +1973,14 @@ function match(pattern: string, pathname: string): Record<string, string> | null
 /* ------------------------------------------------------------------ */
 
 export default {
-  async fetch(request: Request, env: Env) {
+  async fetch(request: Request, env: Env, ctx: WorkerExecutionContext) {
     const url = new URL(request.url);
     const { pathname } = url;
     const auth = request.headers.get("authorization") || undefined;
     // L3: capture origin so json()/errorResponse() can echo a strict allow-list.
     _currentOrigin = request.headers.get("origin");
+    // Capture so withState can fire-and-forget webhook deliveries.
+    _currentCtx = ctx;
 
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -1446,6 +2075,18 @@ export default {
           return json(await withState(env, (s) => handleModuleSnapshot(s, p.slug, p.moduleId as ModuleId, auth)));
         }
       }
+      // DPO inbox — single-pane-of-glass aggregator across modules.
+      {
+        const p = match("/api/portal/:slug/dpo/inbox", pathname);
+        if (request.method === "GET" && p) {
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              return buildDpoInbox(workspace);
+            }),
+          );
+        }
+      }
 
       /* ---------- Setup mutations ---------- */
       {
@@ -1517,6 +2158,27 @@ export default {
           return json(await withState(env, (s) => handleApproveSource(s, p.slug, p.sourceId, auth)));
         }
       }
+      // AI PII scanner — accepts arbitrary text (extracted upstream from
+      // PDF/Excel/Word/email body) and returns India-specific PII hits +
+      // a severity bucket + a quarantine recommendation. Body capped at 1 MB.
+      {
+        const p = match("/api/portal/:slug/scan/pii", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{ text: string; smart?: boolean }>(request);
+          if (typeof body.text !== "string") throw new ValidationError("text is required");
+          if (body.text.length > 1_000_000) throw new ValidationError("text exceeds 1 MB cap");
+          // Role gate inherited from connectors flow — only privileged roles
+          // can run scans (results may include masked-but-real PII).
+          await withState(env, async (s) => {
+            const { user } = ensureTenantAccess(s, p.slug, auth);
+            requireConnectorRole(user);
+          });
+          const result = body.smart
+            ? await scanForPiiSmart(body.text, env)
+            : scanForPii(body.text);
+          return json(result);
+        }
+      }
 
       /* ---------- Register ---------- */
       {
@@ -1557,6 +2219,22 @@ export default {
           return json(await withState(env, (s) => handleNoticeCreate(s, p.slug, body, auth)), 201);
         }
       }
+      // DPDP Rule 3 gap analysis — runs against any notice in the workspace.
+      {
+        const p = match("/api/portal/:slug/notices/:noticeId/analyze", pathname);
+        if (request.method === "POST" && p) {
+          return json(
+            await withState(env, async (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const notice = workspace.notices.find((n) => n.id === p.noticeId);
+              if (!notice) throw new HttpError(404, "Notice not found.");
+              const report = analyzeNoticeAgainstRule3(notice.content);
+              const drafts = await draftMissingItems(report, workspace.tenant.name, env);
+              return { notice: { id: notice.id, title: notice.title, version: notice.version }, report, drafts };
+            }),
+          );
+        }
+      }
 
       /* ---------- Rights ---------- */
       {
@@ -1573,6 +2251,20 @@ export default {
           return json(await withState(env, (s) => handleRightsUpdate(s, p.slug, p.caseId, body, auth)));
         }
       }
+      // SLA-enriched rights cases for the workspace (read-only).
+      {
+        const p = match("/api/portal/:slug/rights/sla", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => handleRightsSlaSnapshot(s, p.slug, auth)));
+        }
+      }
+      // Manual escalation pass (also runs nightly via cron).
+      {
+        const p = match("/api/portal/:slug/rights/sla/escalate", pathname);
+        if (request.method === "POST" && p) {
+          return json(await withState(env, (s) => handleRightsSlaEscalate(s, p.slug, auth)));
+        }
+      }
 
       /* ---------- Retention ---------- */
       {
@@ -1587,6 +2279,24 @@ export default {
         if (request.method === "POST" && p) {
           const body = await parseBody<any>(request);
           return json(await withState(env, (s) => handleDeletionUpdate(s, p.slug, p.taskId, body, auth)));
+        }
+      }
+      {
+        // Retention preview — read-only dry run that returns what *would*
+        // happen if enforcement ran right now. Useful for the UI's "preview
+        // schedule" banner before flipping the switch on cron.
+        const p = match("/api/portal/:slug/retention/preview", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => handleRetentionPreview(s, p.slug, auth)));
+        }
+      }
+      {
+        // Manual on-demand enforcement. Runs the same code path as the cron
+        // but lets a TENANT_ADMIN press "Enforce now" or target specific tasks.
+        const p = match("/api/portal/:slug/retention/run", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{ taskIds?: string[]; dryRun?: boolean }>(request);
+          return json(await withState(env, (s) => handleRetentionRun(s, p.slug, body, auth)));
         }
       }
 
@@ -1606,6 +2316,22 @@ export default {
         }
       }
 
+      /* ---------- Anomaly detection ---------- */
+      {
+        // Run a fresh scan over the audit trail and persist new alerts.
+        // Idempotent: alerts are de-duped by stable id (kind+actor+window).
+        const p = match("/api/portal/:slug/anomalies/scan", pathname);
+        if (request.method === "POST" && p) {
+          return json(await withState(env, (s) => handleAnomalyScan(s, p.slug, auth)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/anomalies", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => handleAnomalyList(s, p.slug, auth)));
+        }
+      }
+
       /* ---------- Processors ---------- */
       {
         const p = match("/api/portal/:slug/processors/:processorId/update", pathname);
@@ -1619,6 +2345,149 @@ export default {
         if (request.method === "POST" && p) {
           const body = await parseBody<any>(request);
           return json(await withState(env, (s) => handleProcessorUpdate(s, p.slug, p.processorId, body, auth)));
+        }
+      }
+      // DPA generator — produces a Markdown DPA tailored to the processor's
+      // connector category + DPDP context. Result is persisted as an
+      // EvidenceArtifact so it appears in the Compliance Pack.
+      {
+        const p = match("/api/portal/:slug/processors/:processorId/dpa", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{
+            fiduciaryAddress: string;
+            fiduciaryDpoName: string;
+            fiduciaryDpoEmail: string;
+            effectiveDate?: string;
+            termMonths?: number;
+            connectorType?: ConnectorType;
+          }>(request);
+          if (!body.fiduciaryDpoName || !body.fiduciaryDpoEmail) {
+            throw new ValidationError("fiduciaryDpoName and fiduciaryDpoEmail required.");
+          }
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const processor = workspace.processors.find((proc) => proc.id === p.processorId);
+              if (!processor) throw new HttpError(404, "Processor not found.");
+              const def = body.connectorType
+                ? CONNECTOR_DEFINITIONS[body.connectorType]
+                : findConnectorDefForProcessor(processor, CONNECTOR_DEFINITIONS);
+              const output = generateDpa({
+                tenantName: workspace.tenant.name,
+                tenantIndustry: workspace.tenant.industry,
+                fiduciaryAddress: body.fiduciaryAddress || "[Operator must fill in registered office]",
+                fiduciaryDpoName: body.fiduciaryDpoName,
+                fiduciaryDpoEmail: body.fiduciaryDpoEmail,
+                processor,
+                connectorDefinition: def,
+                effectiveDate: body.effectiveDate || new Date().toISOString().slice(0, 10),
+                termMonths: body.termMonths,
+              });
+              persistDpaOutput(workspace, output);
+              return output;
+            }),
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/dpa-templates", pathname);
+        if (request.method === "GET" && p) {
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const ws = workspace as any;
+              return { templates: (ws.dpaTemplates || []).slice(0, 50) };
+            }),
+          );
+        }
+      }
+
+      /* ---------- DPIA — DPDP §10 + Rule 13 ---------- */
+      {
+        const p = match("/api/portal/:slug/dpia/run", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{
+            activityName: string;
+            activityDescription: string;
+            dataCategories: string[];
+            estimatedDataPrincipals: number;
+            involvesChildrenData: boolean;
+            involvesSensitiveIdentifiers: boolean;
+            crossBorderTransfer: boolean;
+            automatedDecisionMaking: boolean;
+            largeScaleProfiling: boolean;
+            linkedProcessorIds: string[];
+            linkedRegisterEntryIds: string[];
+            mitigations: string;
+            conductedBy: string;
+          }>(request);
+          if (!body.activityName || !body.conductedBy) throw new ValidationError("activityName and conductedBy are required.");
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const result = runDpia(workspace, {
+                activityName: String(body.activityName).slice(0, 200),
+                activityDescription: String(body.activityDescription || "").slice(0, 4000),
+                dataCategories: Array.isArray(body.dataCategories) ? body.dataCategories.slice(0, 30) : [],
+                estimatedDataPrincipals: Number(body.estimatedDataPrincipals) || 0,
+                involvesChildrenData: !!body.involvesChildrenData,
+                involvesSensitiveIdentifiers: !!body.involvesSensitiveIdentifiers,
+                crossBorderTransfer: !!body.crossBorderTransfer,
+                automatedDecisionMaking: !!body.automatedDecisionMaking,
+                largeScaleProfiling: !!body.largeScaleProfiling,
+                linkedProcessorIds: Array.isArray(body.linkedProcessorIds) ? body.linkedProcessorIds.slice(0, 50) : [],
+                linkedRegisterEntryIds: Array.isArray(body.linkedRegisterEntryIds) ? body.linkedRegisterEntryIds.slice(0, 50) : [],
+                mitigations: String(body.mitigations || "").slice(0, 6000),
+                conductedBy: String(body.conductedBy).slice(0, 200),
+              });
+              persistDpia(workspace, result);
+              return result;
+            }),
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/dpia/list", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => {
+            const { workspace } = ensureTenantAccess(s, p.slug, auth);
+            const ws = workspace as any;
+            return { dpiaResults: ws.dpiaResults || [] };
+          }));
+        }
+      }
+
+      /* ---------- Sahamati AA Consent Manager ---------- */
+      {
+        // Pull a fresh consent artefact from the AA (or the deterministic
+        // simulator) and persist it. Wraps the artefact JSON as evidence.
+        const p = match("/api/portal/:slug/consent-manager/aa/ingest", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{ consentHandle?: string; replay?: any }>(request);
+          return json(await withState(env, (s) => handleAaIngest(s, p.slug, body, auth, env)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/consent-manager/aa/list", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => handleAaList(s, p.slug, auth)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/consent-manager/aa/revoke", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{ consentHandle: string; rightsCaseId?: string }>(request);
+          return json(await withState(env, (s) => handleAaRevoke(s, p.slug, body, auth)));
+        }
+      }
+      {
+        // Bulk revocation for a single VUA — used when closing a §6
+        // withdrawal rights case so all of that customer's AA consents
+        // get retired in one transaction.
+        const p = match("/api/portal/:slug/consent-manager/aa/withdraw-customer", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{ customerId: string; rightsCaseId?: string }>(request);
+          return json(await withState(env, (s) => handleAaWithdrawCustomer(s, p.slug, body, auth)));
         }
       }
 
@@ -1912,6 +2781,73 @@ export default {
         }
       }
 
+      /* ---------- Audit-log SIEM export (API-key authed, no session) ---------- */
+      {
+        // Tenant-admin endpoints to manage long-lived export keys.
+        const p = match("/api/portal/:slug/audit-export/keys", pathname);
+        if (p && request.method === "GET") {
+          return json(await withState(env, (s) => handleAuditKeyList(s, p.slug, auth)));
+        }
+        if (p && request.method === "POST") {
+          const body = await parseBody<{ label?: string }>(request);
+          return json(await withState(env, (s) => handleAuditKeyCreate(s, p.slug, body, auth)), 201);
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/audit-export/keys/:keyId", pathname);
+        if (p && request.method === "DELETE") {
+          return json(await withState(env, (s) => handleAuditKeyRevoke(s, p.slug, p.keyId, auth)));
+        }
+      }
+      {
+        // Streaming NDJSON for SIEM pollers (Splunk HEC, Datadog Logs, Elastic).
+        // Auth: Authorization: Bearer pflyt_ak_<...>
+        if (request.method === "GET" && pathname === "/api/audit-export/stream") {
+          const sinceParam = url.searchParams.get("since") ?? undefined;
+          const limitParam = url.searchParams.get("limit");
+          const limit = limitParam ? Number(limitParam) : undefined;
+          return await handleAuditStream(env, request, { since: sinceParam, limit: Number.isFinite(limit) ? limit : undefined });
+        }
+      }
+
+      /* ---------- Outbound webhooks (Slack/PagerDuty/Datadog hub) ---------- */
+      {
+        const p = match("/api/portal/:slug/webhooks/subscriptions", pathname);
+        if (p && request.method === "GET") {
+          return json(await withState(env, (s) => handleWebhookList(s, p.slug, auth)));
+        }
+        if (p && request.method === "POST") {
+          const body = await parseBody<{
+            url: string; eventFilter: string; secret: string; description?: string;
+          }>(request);
+          return json(await withState(env, (s) => handleWebhookCreate(s, p.slug, body, auth, env)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/webhooks/subscriptions/:id", pathname);
+        if (p && request.method === "DELETE") {
+          return json(await withState(env, (s) => handleWebhookDelete(s, p.slug, p.id, auth)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/webhooks/subscriptions/:id/pause", pathname);
+        if (p && request.method === "POST") {
+          return json(await withState(env, (s) => handleWebhookPause(s, p.slug, p.id, auth)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/webhooks/subscriptions/:id/resume", pathname);
+        if (p && request.method === "POST") {
+          return json(await withState(env, (s) => handleWebhookResume(s, p.slug, p.id, auth)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/webhooks/deliveries", pathname);
+        if (p && request.method === "GET") {
+          return json(await withState(env, (s) => handleWebhookDeliveries(s, p.slug, auth)));
+        }
+      }
+
       /* ---------- Public ---------- */
       {
         const p = match("/api/public/:slug/rights", pathname);
@@ -1940,10 +2876,103 @@ export default {
           return json(await withState(env, (s) => handleAcknowledgeNotice(s, p.slug)), 201);
         }
       }
+      /* ---------- Consent widget — embeddable JS + ISO/IEC 27560 receipts ---------- */
+      {
+        const p = match("/api/public/:slug/consent/widget.js", pathname);
+        if (p && request.method === "GET") {
+          // No auth — this is the snippet customers paste on their site.
+          const apiBase = `${url.protocol}//${url.host}/api`;
+          const noticeUrl = `${url.protocol}//${url.host}/public/${p.slug}/notice`;
+          const js = renderConsentWidgetJs({ apiBase, tenantSlug: p.slug, noticeUrl });
+          return new Response(js, {
+            status: 200,
+            headers: {
+              "content-type": "application/javascript; charset=utf-8",
+              "cache-control": "public, max-age=300",
+              ...corsHeadersFor(_currentOrigin),
+            },
+          });
+        }
+      }
+      {
+        const p = match("/api/public/:slug/consent/receipts", pathname);
+        if (p && request.method === "POST") {
+          const body = await parseBody<{
+            subjectIdentifier: string;
+            purposes: Array<{ id: string; granted: boolean }>;
+            locale?: string;
+            userAgent?: string;
+          }>(request);
+          const ip =
+            request.headers.get("cf-connecting-ip") ||
+            request.headers.get("x-forwarded-for") ||
+            "";
+          return json(
+            await withState(env, async (s) => {
+              const workspace = ensureWorkspace(s, p.slug);
+              return issueConsentReceipt(workspace, { ...body, ip });
+            }),
+            201,
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/consent/receipts", pathname);
+        if (p && request.method === "GET") {
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const ws = workspace as any;
+              return { receipts: (ws.consentReceipts || []).slice(0, 200) };
+            }),
+          );
+        }
+      }
 
       return json({ error: "Not found" }, 404);
     } catch (error) {
       return errorResponse(error);
     }
+  },
+
+  /**
+   *  Cloudflare Worker scheduled handler — fires on the cron triggers
+   *  registered in `wrangler.toml`. Walks every tenant workspace, runs
+   *  retention enforcement, and persists the resulting state mutations.
+   *
+   *  Why one DO call wrapping the loop: the AppState lives in a single
+   *  Durable Object instance ("default"). One get/put per cron run is
+   *  cheaper and atomic vs. per-tenant transactions; a partial run that
+   *  fails mid-loop won't write half-applied state.
+   */
+  async scheduled(
+    event: { scheduledTime: number; cron: string },
+    env: Env,
+    ctx: { waitUntil(promise: Promise<unknown>): void },
+  ) {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const id = env.PROOFLYT_RUNTIME.idFromName("default");
+          const stub = env.PROOFLYT_RUNTIME.get(id);
+          const state = await stub.getState();
+          const report = runRetentionForAllTenants(state.workspaces, { asOf: new Date(event.scheduledTime) });
+          await stub.putState(state);
+          // Worker logs are tail-able via `wrangler tail` and surface in the
+          // Cloudflare dashboard; structured JSON for greppability.
+          console.log(JSON.stringify({
+            kind: "retention.scheduled",
+            cron: event.cron,
+            scheduledTime: new Date(event.scheduledTime).toISOString(),
+            tenantsScanned: report.tenantsScanned,
+            erased: report.totals.erased,
+            denied: report.totals.denied,
+            pending: report.totals.pending,
+          }));
+        } catch (err) {
+          console.error("retention.scheduled.failed", (err as Error).message);
+        }
+      })(),
+    );
   },
 };
