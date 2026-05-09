@@ -53,6 +53,34 @@ import {
   mintOAuthState,
   consumeOAuthState,
 } from "./connectors.js";
+import { analyzeNoticeAgainstRule3, draftMissingItems } from "./notice-rule3.js";
+import { runDpia, persistDpia } from "./dpia.js";
+import { buildDpoInbox } from "./dpo-inbox.js";
+import {
+  generateDpa,
+  persistDpaOutput,
+  findConnectorDefForProcessor,
+} from "./dpa-generator.js";
+import {
+  enrichAllRightsCases,
+  enrichRightsCase,
+  summariseSla,
+  flagSlaEscalations,
+  flagSlaEscalationsAcrossTenants,
+  STATUTORY_WINDOWS_DAYS,
+} from "./dsr-sla.js";
+import {
+  createAuditExportKey,
+  revokeAuditExportKey,
+  listAuditExportKeysPublic,
+  authenticateExportKey,
+  exportAuditWindow,
+} from "./audit-export.js";
+import {
+  detectAnomalies,
+  persistAlerts,
+  listPersistedAlerts,
+} from "./audit-anomaly.js";
 import { issueConsentReceipt, renderConsentWidgetJs } from "./consent-widget.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
@@ -962,6 +990,189 @@ function handleIncidentUpdate(
 }
 
 /* ------------------------------------------------------------------ */
+<<<<<<< HEAD
+/*  Audit-trail anomaly detection                                       */
+/* ------------------------------------------------------------------ */
+
+const ANOMALY_ALLOWED_ROLES: Role[] = [
+=======
+<<<<<<< HEAD
+/*  Audit-log SIEM export                                              */
+/* ------------------------------------------------------------------ */
+
+const AUDIT_EXPORT_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+];
+
+function requireAuditExportRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!AUDIT_EXPORT_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Audit-export key management is restricted by role.");
+  }
+}
+
+function handleAuditKeyList(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAuditExportRole(user);
+  return { ok: true, keys: listAuditExportKeysPublic(workspace) };
+}
+
+async function handleAuditKeyCreate(
+  state: AppState,
+  tenantSlug: string,
+  body: { label?: string },
+  authHeader?: string,
+) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAuditExportRole(user);
+  if (!body?.label) throw new HttpError(400, "label is required.");
+  let result;
+  try {
+    result = await createAuditExportKey(workspace, body.label, user.id);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+  appendAudit(workspace, user, "setup", "AUDIT_EXPORT_KEY_CREATED", result.key.id,
+    `Audit export key minted for "${result.key.label}".`);
+  // The raw key is returned ONCE here. Subsequent list calls only show the hint.
+  return {
+    ok: true,
+    key: {
+      id: result.key.id,
+      label: result.key.label,
+      createdAt: result.key.createdAt,
+    },
+    rawKey: result.rawKey,
+    integrationHints: {
+      splunkHec: `Headers: { Authorization: \"Bearer ${result.rawKey}\" } → POST endpoint accepts NDJSON`,
+      datadog: `Bearer this key on the upstream collector; we emit one JSON object per line.`,
+      curl: `curl -H 'authorization: Bearer ${result.rawKey}' '<API_BASE>/api/audit-export/stream?since=2026-01-01T00:00:00Z'`,
+    },
+  };
+}
+
+function handleAuditKeyRevoke(state: AppState, tenantSlug: string, keyId: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAuditExportRole(user);
+  const ok = revokeAuditExportKey(workspace, keyId);
+  if (!ok) throw new HttpError(404, "Key not found.");
+  appendAudit(workspace, user, "setup", "AUDIT_EXPORT_KEY_REVOKED", keyId,
+    `Audit export key ${keyId} revoked.`);
+  return { ok: true };
+}
+
+async function handleAuditStream(
+  env: Env,
+  request: Request,
+  request_in: { since?: string; limit?: number },
+) {
+  const auth = request.headers.get("authorization") || "";
+  const m = /^Bearer\s+(\S+)$/i.exec(auth);
+  if (!m) {
+    return new Response("Missing Authorization: Bearer …", {
+      status: 401,
+      headers: { ...corsHeadersFor(_currentOrigin), "content-type": "text/plain" },
+    });
+  }
+  const rawKey = m[1];
+  const fromIp = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for") ?? undefined;
+  return await withState(env, (s) => streamForKey(s, rawKey, fromIp, request_in));
+
+  async function streamForKey(state: AppState, key: string, ip: string | undefined, opts: { since?: string; limit?: number }) {
+    const auth = await authenticateExportKey(state.workspaces, key, ip);
+    if (auth.ok === false) {
+      return new Response(auth.reason, {
+        status: auth.status,
+        headers: { ...corsHeadersFor(_currentOrigin), "content-type": "text/plain" },
+      });
+    }
+    const result = exportAuditWindow(auth.workspace, opts, auth.key);
+    return new Response(result.body, {
+      status: 200,
+      headers: {
+        ...corsHeadersFor(_currentOrigin),
+        "content-type": "application/x-ndjson; charset=utf-8",
+        "x-prooflyt-count": String(result.count),
+        "x-prooflyt-next-cursor": result.nextCursor ?? "",
+        "x-prooflyt-exhausted": result.exhausted ? "true" : "false",
+        "cache-control": "no-store",
+      },
+    });
+  }
+=======
+/*  Rights SLA snapshot + escalation                                    */
+/* ------------------------------------------------------------------ */
+
+function handleRightsSlaSnapshot(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  return {
+    ok: true,
+    summary: summariseSla(workspace),
+    cases: enrichAllRightsCases(workspace),
+    statutoryWindows: STATUTORY_WINDOWS_DAYS,
+  };
+}
+
+const RIGHTS_SLA_ALLOWED_ROLES: Role[] = [
+>>>>>>> origin/main
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+  "AUDITOR",
+];
+
+<<<<<<< HEAD
+function requireAnomalyRole(user: User): void {
+  if (user.internalAdmin) return;
+  if (!ANOMALY_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "Anomaly detection is restricted by role.");
+  }
+}
+
+function handleAnomalyScan(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAnomalyRole(user);
+  const report = detectAnomalies(workspace);
+  const fresh = persistAlerts(workspace, report.alerts);
+  // Emit one audit entry per FRESH alert so webhooks fan out only on
+  // newly-detected anomalies (no duplicate Slack pings on every scan).
+  for (const alert of fresh) {
+    appendAudit(
+      workspace,
+      user,
+      "incidents",          // closest module bucket; surfaces in DPO inbox
+      `ANOMALY_${alert.kind}`,
+      alert.id,
+      `[${alert.severity}] ${alert.detail}`,
+    );
+  }
+  return { ok: true, report, freshAlertCount: fresh.length };
+}
+
+function handleAnomalyList(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  requireAnomalyRole(user);
+  const persisted = listPersistedAlerts(workspace);
+  return { ok: true, count: persisted.length, alerts: persisted };
+=======
+function handleRightsSlaEscalate(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  if (!user.internalAdmin && !RIGHTS_SLA_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "SLA escalation is restricted by role.");
+  }
+  const outcomes = flagSlaEscalations(workspace);
+  if (outcomes.length > 0) {
+    appendAudit(workspace, user, "rights", "RIGHTS_SLA_ESCALATION_RUN", tenantSlug,
+      `Escalated ${outcomes.length} case(s).`);
+  }
+  return { ok: true, outcomes };
+>>>>>>> origin/main
+>>>>>>> origin/main
+}
+
+/* ------------------------------------------------------------------ */
 /*  Processor updates                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -1438,6 +1649,18 @@ export default {
           return json(await withState(env, (s) => handleModuleSnapshot(s, p.slug, p.moduleId as ModuleId, auth)));
         }
       }
+      // DPO inbox — single-pane-of-glass aggregator across modules.
+      {
+        const p = match("/api/portal/:slug/dpo/inbox", pathname);
+        if (request.method === "GET" && p) {
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              return buildDpoInbox(workspace);
+            }),
+          );
+        }
+      }
 
       /* ---------- Setup mutations ---------- */
       {
@@ -1549,6 +1772,22 @@ export default {
           return json(await withState(env, (s) => handleNoticeCreate(s, p.slug, body, auth)), 201);
         }
       }
+      // DPDP Rule 3 gap analysis — runs against any notice in the workspace.
+      {
+        const p = match("/api/portal/:slug/notices/:noticeId/analyze", pathname);
+        if (request.method === "POST" && p) {
+          return json(
+            await withState(env, async (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const notice = workspace.notices.find((n) => n.id === p.noticeId);
+              if (!notice) throw new HttpError(404, "Notice not found.");
+              const report = analyzeNoticeAgainstRule3(notice.content);
+              const drafts = await draftMissingItems(report, workspace.tenant.name, env);
+              return { notice: { id: notice.id, title: notice.title, version: notice.version }, report, drafts };
+            }),
+          );
+        }
+      }
 
       /* ---------- Rights ---------- */
       {
@@ -1563,6 +1802,20 @@ export default {
         if (request.method === "POST" && p) {
           const body = await parseBody<any>(request);
           return json(await withState(env, (s) => handleRightsUpdate(s, p.slug, p.caseId, body, auth)));
+        }
+      }
+      // SLA-enriched rights cases for the workspace (read-only).
+      {
+        const p = match("/api/portal/:slug/rights/sla", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => handleRightsSlaSnapshot(s, p.slug, auth)));
+        }
+      }
+      // Manual escalation pass (also runs nightly via cron).
+      {
+        const p = match("/api/portal/:slug/rights/sla/escalate", pathname);
+        if (request.method === "POST" && p) {
+          return json(await withState(env, (s) => handleRightsSlaEscalate(s, p.slug, auth)));
         }
       }
 
@@ -1598,6 +1851,22 @@ export default {
         }
       }
 
+      /* ---------- Anomaly detection ---------- */
+      {
+        // Run a fresh scan over the audit trail and persist new alerts.
+        // Idempotent: alerts are de-duped by stable id (kind+actor+window).
+        const p = match("/api/portal/:slug/anomalies/scan", pathname);
+        if (request.method === "POST" && p) {
+          return json(await withState(env, (s) => handleAnomalyScan(s, p.slug, auth)));
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/anomalies", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => handleAnomalyList(s, p.slug, auth)));
+        }
+      }
+
       /* ---------- Processors ---------- */
       {
         const p = match("/api/portal/:slug/processors/:processorId/update", pathname);
@@ -1611,6 +1880,115 @@ export default {
         if (request.method === "POST" && p) {
           const body = await parseBody<any>(request);
           return json(await withState(env, (s) => handleProcessorUpdate(s, p.slug, p.processorId, body, auth)));
+        }
+      }
+      // DPA generator — produces a Markdown DPA tailored to the processor's
+      // connector category + DPDP context. Result is persisted as an
+      // EvidenceArtifact so it appears in the Compliance Pack.
+      {
+        const p = match("/api/portal/:slug/processors/:processorId/dpa", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{
+            fiduciaryAddress: string;
+            fiduciaryDpoName: string;
+            fiduciaryDpoEmail: string;
+            effectiveDate?: string;
+            termMonths?: number;
+            connectorType?: ConnectorType;
+          }>(request);
+          if (!body.fiduciaryDpoName || !body.fiduciaryDpoEmail) {
+            throw new ValidationError("fiduciaryDpoName and fiduciaryDpoEmail required.");
+          }
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const processor = workspace.processors.find((proc) => proc.id === p.processorId);
+              if (!processor) throw new HttpError(404, "Processor not found.");
+              const def = body.connectorType
+                ? CONNECTOR_DEFINITIONS[body.connectorType]
+                : findConnectorDefForProcessor(processor, CONNECTOR_DEFINITIONS);
+              const output = generateDpa({
+                tenantName: workspace.tenant.name,
+                tenantIndustry: workspace.tenant.industry,
+                fiduciaryAddress: body.fiduciaryAddress || "[Operator must fill in registered office]",
+                fiduciaryDpoName: body.fiduciaryDpoName,
+                fiduciaryDpoEmail: body.fiduciaryDpoEmail,
+                processor,
+                connectorDefinition: def,
+                effectiveDate: body.effectiveDate || new Date().toISOString().slice(0, 10),
+                termMonths: body.termMonths,
+              });
+              persistDpaOutput(workspace, output);
+              return output;
+            }),
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/dpa-templates", pathname);
+        if (request.method === "GET" && p) {
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const ws = workspace as any;
+              return { templates: (ws.dpaTemplates || []).slice(0, 50) };
+            }),
+          );
+        }
+      }
+
+      /* ---------- DPIA — DPDP §10 + Rule 13 ---------- */
+      {
+        const p = match("/api/portal/:slug/dpia/run", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{
+            activityName: string;
+            activityDescription: string;
+            dataCategories: string[];
+            estimatedDataPrincipals: number;
+            involvesChildrenData: boolean;
+            involvesSensitiveIdentifiers: boolean;
+            crossBorderTransfer: boolean;
+            automatedDecisionMaking: boolean;
+            largeScaleProfiling: boolean;
+            linkedProcessorIds: string[];
+            linkedRegisterEntryIds: string[];
+            mitigations: string;
+            conductedBy: string;
+          }>(request);
+          if (!body.activityName || !body.conductedBy) throw new ValidationError("activityName and conductedBy are required.");
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const result = runDpia(workspace, {
+                activityName: String(body.activityName).slice(0, 200),
+                activityDescription: String(body.activityDescription || "").slice(0, 4000),
+                dataCategories: Array.isArray(body.dataCategories) ? body.dataCategories.slice(0, 30) : [],
+                estimatedDataPrincipals: Number(body.estimatedDataPrincipals) || 0,
+                involvesChildrenData: !!body.involvesChildrenData,
+                involvesSensitiveIdentifiers: !!body.involvesSensitiveIdentifiers,
+                crossBorderTransfer: !!body.crossBorderTransfer,
+                automatedDecisionMaking: !!body.automatedDecisionMaking,
+                largeScaleProfiling: !!body.largeScaleProfiling,
+                linkedProcessorIds: Array.isArray(body.linkedProcessorIds) ? body.linkedProcessorIds.slice(0, 50) : [],
+                linkedRegisterEntryIds: Array.isArray(body.linkedRegisterEntryIds) ? body.linkedRegisterEntryIds.slice(0, 50) : [],
+                mitigations: String(body.mitigations || "").slice(0, 6000),
+                conductedBy: String(body.conductedBy).slice(0, 200),
+              });
+              persistDpia(workspace, result);
+              return result;
+            }),
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/dpia/list", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => {
+            const { workspace } = ensureTenantAccess(s, p.slug, auth);
+            const ws = workspace as any;
+            return { dpiaResults: ws.dpiaResults || [] };
+          }));
         }
       }
 
@@ -1876,6 +2254,35 @@ export default {
               return { ok: true, eventId: result.event.id, rightsCaseId: result.createdRights?.id };
             }),
           );
+        }
+      }
+
+      /* ---------- Audit-log SIEM export (API-key authed, no session) ---------- */
+      {
+        // Tenant-admin endpoints to manage long-lived export keys.
+        const p = match("/api/portal/:slug/audit-export/keys", pathname);
+        if (p && request.method === "GET") {
+          return json(await withState(env, (s) => handleAuditKeyList(s, p.slug, auth)));
+        }
+        if (p && request.method === "POST") {
+          const body = await parseBody<{ label?: string }>(request);
+          return json(await withState(env, (s) => handleAuditKeyCreate(s, p.slug, body, auth)), 201);
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/audit-export/keys/:keyId", pathname);
+        if (p && request.method === "DELETE") {
+          return json(await withState(env, (s) => handleAuditKeyRevoke(s, p.slug, p.keyId, auth)));
+        }
+      }
+      {
+        // Streaming NDJSON for SIEM pollers (Splunk HEC, Datadog Logs, Elastic).
+        // Auth: Authorization: Bearer pflyt_ak_<...>
+        if (request.method === "GET" && pathname === "/api/audit-export/stream") {
+          const sinceParam = url.searchParams.get("since") ?? undefined;
+          const limitParam = url.searchParams.get("limit");
+          const limit = limitParam ? Number(limitParam) : undefined;
+          return await handleAuditStream(env, request, { since: sinceParam, limit: Number.isFinite(limit) ? limit : undefined });
         }
       }
 
