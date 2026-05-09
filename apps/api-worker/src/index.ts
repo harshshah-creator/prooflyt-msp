@@ -991,13 +991,6 @@ function handleIncidentUpdate(
 }
 
 /* ------------------------------------------------------------------ */
-<<<<<<< HEAD
-/*  Audit-trail anomaly detection                                       */
-/* ------------------------------------------------------------------ */
-
-const ANOMALY_ALLOWED_ROLES: Role[] = [
-=======
-<<<<<<< HEAD
 /*  Audit-log SIEM export                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1102,9 +1095,18 @@ async function handleAuditStream(
       },
     });
   }
-=======
+}
+
+/* ------------------------------------------------------------------ */
 /*  Rights SLA snapshot + escalation                                    */
 /* ------------------------------------------------------------------ */
+
+const RIGHTS_SLA_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+  "AUDITOR",
+];
 
 function handleRightsSlaSnapshot(state: AppState, tenantSlug: string, authHeader?: string) {
   const { workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
@@ -1116,15 +1118,30 @@ function handleRightsSlaSnapshot(state: AppState, tenantSlug: string, authHeader
   };
 }
 
-const RIGHTS_SLA_ALLOWED_ROLES: Role[] = [
->>>>>>> origin/main
+function handleRightsSlaEscalate(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  if (!user.internalAdmin && !RIGHTS_SLA_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "SLA escalation is restricted by role.");
+  }
+  const outcomes = flagSlaEscalations(workspace);
+  if (outcomes.length > 0) {
+    appendAudit(workspace, user, "rights", "RIGHTS_SLA_ESCALATION_RUN", tenantSlug,
+      `Escalated ${outcomes.length} case(s).`);
+  }
+  return { ok: true, outcomes };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Audit-trail anomaly detection                                       */
+/* ------------------------------------------------------------------ */
+
+const ANOMALY_ALLOWED_ROLES: Role[] = [
   "TENANT_ADMIN",
   "COMPLIANCE_MANAGER",
   "SECURITY_OWNER",
   "AUDITOR",
 ];
 
-<<<<<<< HEAD
 function requireAnomalyRole(user: User): void {
   if (user.internalAdmin) return;
   if (!ANOMALY_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
@@ -1157,20 +1174,6 @@ function handleAnomalyList(state: AppState, tenantSlug: string, authHeader?: str
   requireAnomalyRole(user);
   const persisted = listPersistedAlerts(workspace);
   return { ok: true, count: persisted.length, alerts: persisted };
-=======
-function handleRightsSlaEscalate(state: AppState, tenantSlug: string, authHeader?: string) {
-  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
-  if (!user.internalAdmin && !RIGHTS_SLA_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
-    throw new HttpError(403, "SLA escalation is restricted by role.");
-  }
-  const outcomes = flagSlaEscalations(workspace);
-  if (outcomes.length > 0) {
-    appendAudit(workspace, user, "rights", "RIGHTS_SLA_ESCALATION_RUN", tenantSlug,
-      `Escalated ${outcomes.length} case(s).`);
-  }
-  return { ok: true, outcomes };
->>>>>>> origin/main
->>>>>>> origin/main
 }
 
 /* ------------------------------------------------------------------ */
