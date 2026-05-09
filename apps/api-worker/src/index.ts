@@ -53,6 +53,7 @@ import {
   mintOAuthState,
   consumeOAuthState,
 } from "./connectors.js";
+import { analyzeNoticeAgainstRule3, draftMissingItems } from "./notice-rule3.js";
 import { runDpia, persistDpia } from "./dpia.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
@@ -1547,6 +1548,22 @@ export default {
         if (request.method === "POST" && p) {
           const body = await parseBody<{ title: string; content: string; audience: string }>(request);
           return json(await withState(env, (s) => handleNoticeCreate(s, p.slug, body, auth)), 201);
+        }
+      }
+      // DPDP Rule 3 gap analysis — runs against any notice in the workspace.
+      {
+        const p = match("/api/portal/:slug/notices/:noticeId/analyze", pathname);
+        if (request.method === "POST" && p) {
+          return json(
+            await withState(env, async (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const notice = workspace.notices.find((n) => n.id === p.noticeId);
+              if (!notice) throw new HttpError(404, "Notice not found.");
+              const report = analyzeNoticeAgainstRule3(notice.content);
+              const drafts = await draftMissingItems(report, workspace.tenant.name, env);
+              return { notice: { id: notice.id, title: notice.title, version: notice.version }, report, drafts };
+            }),
+          );
         }
       }
 

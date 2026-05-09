@@ -172,7 +172,11 @@ export function runDpia(
     .filter((f) => f.triggered)
     .map((f) => RISK_FACTORS.find((rf) => rf.id === f.id)!.recommendation);
 
-  const id = `DPIA-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${(workspace.dpiaResults?.length || 0) + 1}`;
+  // dpiaResults is persisted via persistDpia() which casts to a wider type;
+  // the read path needs the same cast since TenantWorkspace doesn't carry
+  // dpiaResults on the public contract yet.
+  const existingDpias = (workspace as TenantWorkspace & { dpiaResults?: DpiaResult[] }).dpiaResults ?? [];
+  const id = `DPIA-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${existingDpias.length + 1}`;
   const conductedAt = new Date().toISOString();
 
   const linkedProcessors = workspace.processors.filter((p) => q.linkedProcessorIds.includes(p.id));
