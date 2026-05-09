@@ -2,6 +2,8 @@ import { submitPublicRightAction } from "./actions";
 import { getPublicRights } from "../../../../lib/api";
 import { messagesFor, normaliseLocale } from "../../../../lib/i18n";
 import { LocaleSwitcher } from "../../../../components/locale-switcher";
+import { brandStageStyle, safeBrand } from "../../../../lib/tenant-brand";
+import { TenantBrandHeader } from "../../../../components/tenant-brand-header";
 
 export default async function PublicRightsPage({
   params,
@@ -15,10 +17,20 @@ export default async function PublicRightsPage({
   const locale = normaliseLocale(query.lang);
   const t = messagesFor(locale);
   const data = await getPublicRights(tenantSlug);
+  const brand = safeBrand(data.tenant?.publicBrand);
 
   return (
-    <main className="public-stage" lang={locale}>
+    <main
+      className="public-stage public-stage--branded"
+      style={brandStageStyle(brand)}
+      lang={locale}
+    >
       <section className="public-sheet">
+        <TenantBrandHeader
+          brand={brand}
+          tenantName={data.tenant.name}
+          subtitle="DPDP §13–§15 — Data principal rights"
+        />
         <LocaleSwitcher
           basePath={`/public/${tenantSlug}/rights`}
           current={locale}
@@ -26,7 +38,6 @@ export default async function PublicRightsPage({
           searchParams={query}
         />
         <span className="section-kicker">{t.rightsKicker}</span>
-        <h1>{data.tenant.name}</h1>
         <p>{data.tenant.operationalStory}</p>
         <div className="public-stats">
           <div>
@@ -67,7 +78,7 @@ export default async function PublicRightsPage({
             {t.rightsLabelMessage}
             <textarea name="message" placeholder={t.rightsPlaceholderMessage} />
           </label>
-          <button type="submit" className="primary-button">
+          <button type="submit" className="primary-button primary-button--branded">
             {t.rightsSubmit}
           </button>
         </form>
