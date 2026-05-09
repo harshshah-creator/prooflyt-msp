@@ -53,6 +53,22 @@ import {
   mintOAuthState,
   consumeOAuthState,
 } from "./connectors.js";
+import { analyzeNoticeAgainstRule3, draftMissingItems } from "./notice-rule3.js";
+import { runDpia, persistDpia } from "./dpia.js";
+import { buildDpoInbox } from "./dpo-inbox.js";
+import {
+  generateDpa,
+  persistDpaOutput,
+  findConnectorDefForProcessor,
+} from "./dpa-generator.js";
+import {
+  enrichAllRightsCases,
+  enrichRightsCase,
+  summariseSla,
+  flagSlaEscalations,
+  flagSlaEscalationsAcrossTenants,
+  STATUTORY_WINDOWS_DAYS,
+} from "./dsr-sla.js";
 import {
   createAuditExportKey,
   revokeAuditExportKey,
@@ -968,6 +984,7 @@ function handleIncidentUpdate(
 }
 
 /* ------------------------------------------------------------------ */
+<<<<<<< HEAD
 /*  Audit-log SIEM export                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1072,6 +1089,39 @@ async function handleAuditStream(
       },
     });
   }
+=======
+/*  Rights SLA snapshot + escalation                                    */
+/* ------------------------------------------------------------------ */
+
+function handleRightsSlaSnapshot(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  return {
+    ok: true,
+    summary: summariseSla(workspace),
+    cases: enrichAllRightsCases(workspace),
+    statutoryWindows: STATUTORY_WINDOWS_DAYS,
+  };
+}
+
+const RIGHTS_SLA_ALLOWED_ROLES: Role[] = [
+  "TENANT_ADMIN",
+  "COMPLIANCE_MANAGER",
+  "SECURITY_OWNER",
+  "AUDITOR",
+];
+
+function handleRightsSlaEscalate(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  if (!user.internalAdmin && !RIGHTS_SLA_ALLOWED_ROLES.some((r) => user.roles.includes(r))) {
+    throw new HttpError(403, "SLA escalation is restricted by role.");
+  }
+  const outcomes = flagSlaEscalations(workspace);
+  if (outcomes.length > 0) {
+    appendAudit(workspace, user, "rights", "RIGHTS_SLA_ESCALATION_RUN", tenantSlug,
+      `Escalated ${outcomes.length} case(s).`);
+  }
+  return { ok: true, outcomes };
+>>>>>>> origin/main
 }
 
 /* ------------------------------------------------------------------ */
@@ -1551,6 +1601,18 @@ export default {
           return json(await withState(env, (s) => handleModuleSnapshot(s, p.slug, p.moduleId as ModuleId, auth)));
         }
       }
+      // DPO inbox — single-pane-of-glass aggregator across modules.
+      {
+        const p = match("/api/portal/:slug/dpo/inbox", pathname);
+        if (request.method === "GET" && p) {
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              return buildDpoInbox(workspace);
+            }),
+          );
+        }
+      }
 
       /* ---------- Setup mutations ---------- */
       {
@@ -1662,6 +1724,22 @@ export default {
           return json(await withState(env, (s) => handleNoticeCreate(s, p.slug, body, auth)), 201);
         }
       }
+      // DPDP Rule 3 gap analysis — runs against any notice in the workspace.
+      {
+        const p = match("/api/portal/:slug/notices/:noticeId/analyze", pathname);
+        if (request.method === "POST" && p) {
+          return json(
+            await withState(env, async (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const notice = workspace.notices.find((n) => n.id === p.noticeId);
+              if (!notice) throw new HttpError(404, "Notice not found.");
+              const report = analyzeNoticeAgainstRule3(notice.content);
+              const drafts = await draftMissingItems(report, workspace.tenant.name, env);
+              return { notice: { id: notice.id, title: notice.title, version: notice.version }, report, drafts };
+            }),
+          );
+        }
+      }
 
       /* ---------- Rights ---------- */
       {
@@ -1676,6 +1754,20 @@ export default {
         if (request.method === "POST" && p) {
           const body = await parseBody<any>(request);
           return json(await withState(env, (s) => handleRightsUpdate(s, p.slug, p.caseId, body, auth)));
+        }
+      }
+      // SLA-enriched rights cases for the workspace (read-only).
+      {
+        const p = match("/api/portal/:slug/rights/sla", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => handleRightsSlaSnapshot(s, p.slug, auth)));
+        }
+      }
+      // Manual escalation pass (also runs nightly via cron).
+      {
+        const p = match("/api/portal/:slug/rights/sla/escalate", pathname);
+        if (request.method === "POST" && p) {
+          return json(await withState(env, (s) => handleRightsSlaEscalate(s, p.slug, auth)));
         }
       }
 
@@ -1724,6 +1816,115 @@ export default {
         if (request.method === "POST" && p) {
           const body = await parseBody<any>(request);
           return json(await withState(env, (s) => handleProcessorUpdate(s, p.slug, p.processorId, body, auth)));
+        }
+      }
+      // DPA generator — produces a Markdown DPA tailored to the processor's
+      // connector category + DPDP context. Result is persisted as an
+      // EvidenceArtifact so it appears in the Compliance Pack.
+      {
+        const p = match("/api/portal/:slug/processors/:processorId/dpa", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{
+            fiduciaryAddress: string;
+            fiduciaryDpoName: string;
+            fiduciaryDpoEmail: string;
+            effectiveDate?: string;
+            termMonths?: number;
+            connectorType?: ConnectorType;
+          }>(request);
+          if (!body.fiduciaryDpoName || !body.fiduciaryDpoEmail) {
+            throw new ValidationError("fiduciaryDpoName and fiduciaryDpoEmail required.");
+          }
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const processor = workspace.processors.find((proc) => proc.id === p.processorId);
+              if (!processor) throw new HttpError(404, "Processor not found.");
+              const def = body.connectorType
+                ? CONNECTOR_DEFINITIONS[body.connectorType]
+                : findConnectorDefForProcessor(processor, CONNECTOR_DEFINITIONS);
+              const output = generateDpa({
+                tenantName: workspace.tenant.name,
+                tenantIndustry: workspace.tenant.industry,
+                fiduciaryAddress: body.fiduciaryAddress || "[Operator must fill in registered office]",
+                fiduciaryDpoName: body.fiduciaryDpoName,
+                fiduciaryDpoEmail: body.fiduciaryDpoEmail,
+                processor,
+                connectorDefinition: def,
+                effectiveDate: body.effectiveDate || new Date().toISOString().slice(0, 10),
+                termMonths: body.termMonths,
+              });
+              persistDpaOutput(workspace, output);
+              return output;
+            }),
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/dpa-templates", pathname);
+        if (request.method === "GET" && p) {
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const ws = workspace as any;
+              return { templates: (ws.dpaTemplates || []).slice(0, 50) };
+            }),
+          );
+        }
+      }
+
+      /* ---------- DPIA — DPDP §10 + Rule 13 ---------- */
+      {
+        const p = match("/api/portal/:slug/dpia/run", pathname);
+        if (request.method === "POST" && p) {
+          const body = await parseBody<{
+            activityName: string;
+            activityDescription: string;
+            dataCategories: string[];
+            estimatedDataPrincipals: number;
+            involvesChildrenData: boolean;
+            involvesSensitiveIdentifiers: boolean;
+            crossBorderTransfer: boolean;
+            automatedDecisionMaking: boolean;
+            largeScaleProfiling: boolean;
+            linkedProcessorIds: string[];
+            linkedRegisterEntryIds: string[];
+            mitigations: string;
+            conductedBy: string;
+          }>(request);
+          if (!body.activityName || !body.conductedBy) throw new ValidationError("activityName and conductedBy are required.");
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const result = runDpia(workspace, {
+                activityName: String(body.activityName).slice(0, 200),
+                activityDescription: String(body.activityDescription || "").slice(0, 4000),
+                dataCategories: Array.isArray(body.dataCategories) ? body.dataCategories.slice(0, 30) : [],
+                estimatedDataPrincipals: Number(body.estimatedDataPrincipals) || 0,
+                involvesChildrenData: !!body.involvesChildrenData,
+                involvesSensitiveIdentifiers: !!body.involvesSensitiveIdentifiers,
+                crossBorderTransfer: !!body.crossBorderTransfer,
+                automatedDecisionMaking: !!body.automatedDecisionMaking,
+                largeScaleProfiling: !!body.largeScaleProfiling,
+                linkedProcessorIds: Array.isArray(body.linkedProcessorIds) ? body.linkedProcessorIds.slice(0, 50) : [],
+                linkedRegisterEntryIds: Array.isArray(body.linkedRegisterEntryIds) ? body.linkedRegisterEntryIds.slice(0, 50) : [],
+                mitigations: String(body.mitigations || "").slice(0, 6000),
+                conductedBy: String(body.conductedBy).slice(0, 200),
+              });
+              persistDpia(workspace, result);
+              return result;
+            }),
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/dpia/list", pathname);
+        if (request.method === "GET" && p) {
+          return json(await withState(env, (s) => {
+            const { workspace } = ensureTenantAccess(s, p.slug, auth);
+            const ws = workspace as any;
+            return { dpiaResults: ws.dpiaResults || [] };
+          }));
         }
       }
 
