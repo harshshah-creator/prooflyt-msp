@@ -21,6 +21,15 @@ import {
 import { ConnectorsView } from "./connectors-view";
 import { EvidenceUploadForm } from "./evidence-upload-form";
 import { SourceUploadForm } from "./source-upload-form";
+import { SlaChip } from "./admin/sla-chip";
+import { SlaSnapshotPanel } from "./admin/sla-snapshot-panel";
+import { DpoInboxPanel } from "./admin/dpo-inbox-panel";
+import { AnomalyPanel } from "./admin/anomaly-panel";
+import { SiemKeysPanel } from "./admin/siem-keys-panel";
+import { WebhooksPanel } from "./admin/webhooks-panel";
+import { CompliancePackExport } from "./admin/compliance-pack-export";
+import { NoticeRule3Trigger } from "./admin/notice-rule3-button";
+import { DpiaPanel } from "./admin/dpia-panel";
 
 function lifecycleToPill(lifecycle: string) {
   switch (lifecycle) {
@@ -178,14 +187,97 @@ export function DashboardView({ data }: { data: WorkspaceResponse }) {
    MODULE VIEW — All module pages with consistent styling
    ═══════════════════════════════════════════════════════ */
 
+export interface AdminPanelData {
+  // notices
+  rule3?: {
+    notice: { id: string; title: string; version: string };
+    report: {
+      totalItems: number;
+      coverageScore: number;
+      appearsDpdpAware: boolean;
+      presentItems: Array<{ id: string; label: string; citation: string }>;
+      missingItems: Array<{ id: string; label: string; citation: string; draftTemplate: string }>;
+    };
+    drafts?: { provider: "groq" | "template"; draft: string };
+  };
+  // rights
+  sla?: {
+    summary: {
+      total: number; overdue: number; atRisk: number; onTrack: number; closed: number;
+      worstCase?: { id: string; daysRemaining: number; type: string };
+    };
+    cases: Array<{
+      id: string;
+      slaInfo?: {
+        state: "ON_TRACK" | "AT_RISK" | "OVERDUE" | "CLOSED";
+        daysRemaining: number;
+        humanLabel: string;
+        citation: string;
+      };
+    }>;
+  };
+  // incidents
+  dpoInbox?: {
+    pulseScore: number;
+    totalOpen: number;
+    counts: Record<string, number>;
+    items: Array<{
+      id: string; priority: "URGENT" | "BLOCKING" | "REVIEW" | "INFO";
+      module: string; title: string; body: string; dueAt?: string; targetId?: string;
+    }>;
+    generatedAt: string;
+  };
+  anomalies?: { count: number; alerts: Array<{
+    id: string; kind: string; severity: "URGENT" | "REVIEW" | "INFO";
+    actor: string; detectedAt: string; windowStart: string; windowEnd: string;
+    count: number; detail: string;
+  }> };
+  // setup
+  siemKeys?: { keys: Array<{
+    id: string; label: string; active: boolean; createdAt: string; keyHint: string;
+    lastUsedAt?: string; lastUsedFromIp?: string;
+  }> };
+  webhookSubs?: { subscriptions: Array<{
+    id: string; url: string; eventFilter: string; description?: string; active: boolean;
+    failureStreak: number; pausedReason?: string; createdAt: string; updatedAt: string;
+  }> };
+  webhookDeliveries?: { deliveries: Array<{
+    id: string; subscriptionId: string; eventType: string;
+    status: "PENDING" | "DELIVERED" | "FAILED";
+    httpStatus?: number; attempts: number; lastError?: string;
+    createdAt: string; deliveredAt?: string; payloadSha256: string;
+  }> };
+  apiBase?: string;
+  // reports
+  firms?: { firms: string[] };
+  dpiaResults?: { dpiaResults: Array<{
+    id: string; activityName: string; conductedAt: string; conductedBy: string;
+    riskScore: number; riskLevel: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+    recommendations: string[]; markdownReport?: string;
+  }> };
+  bearerHint?: string;
+}
+
+export interface ModuleViewFlash {
+  uploaded?: string; updated?: string; error?: string;
+  rule3?: string; ruleErr?: string;
+  slaEscalated?: string;
+  anomalyScanned?: string;
+  siemNew?: string; siemKeyId?: string; siemErr?: string; siemRevoked?: string;
+  whOk?: string; whErr?: string; whDeleted?: string; whPaused?: string; whResumed?: string;
+  dpiaOk?: string; dpiaRisk?: string; dpiaErr?: string;
+}
+
 export function ModuleView({
   data,
   moduleId,
   flash,
+  adminData,
 }: {
   data: WorkspaceResponse;
   moduleId: ModuleId;
-  flash?: { uploaded?: string; updated?: string; error?: string };
+  flash?: ModuleViewFlash;
+  adminData?: AdminPanelData;
 }) {
   const { workspace } = data;
 
@@ -398,13 +490,40 @@ export function ModuleView({
                 <input name="audience" defaultValue={notice.audience} />
                 <button type="submit" className="text-button">Save</button>
               </form>
+              <NoticeRule3Trigger
+                tenantSlug={workspace.tenant.slug}
+                noticeId={notice.id}
+                active={flash?.rule3 === notice.id}
+                result={
+                  flash?.rule3 === notice.id && adminData?.rule3
+                    ? {
+                        totalItems: adminData.rule3.report.totalItems,
+                        coverageScore: adminData.rule3.report.coverageScore,
+                        appearsDpdpAware: adminData.rule3.report.appearsDpdpAware,
+                        presentItems: adminData.rule3.report.presentItems,
+                        missingItems: adminData.rule3.report.missingItems,
+                        drafts: adminData.rule3.drafts,
+                      }
+                    : undefined
+                }
+              />
             </article>
           ))}
+          {flash?.ruleErr && (
+            <p className="form-status error">Rule-3 analysis failed: {flash.ruleErr}</p>
+          )}
         </section>
       )}
 
       {moduleId === "rights" && (
         <section className="worksheet">
+          {adminData?.sla && (
+            <SlaSnapshotPanel
+              tenantSlug={workspace.tenant.slug}
+              summary={adminData.sla.summary}
+              flashEscalated={Boolean(flash?.slaEscalated)}
+            />
+          )}
           <FlashStatus
             flash={flash}
             updatedValue="rights"
@@ -426,13 +545,25 @@ export function ModuleView({
             errorValue="agent-review"
             errorMessage="Agent review failed."
           />
-          {workspace.rightsCases.map((caseItem) => (
+          {workspace.rightsCases.map((caseItem) => {
+            const enriched = adminData?.sla?.cases.find((c) => c.id === caseItem.id);
+            return (
             <article key={caseItem.id} className="case-row">
               <div>
                 <strong>{caseItem.id}</strong>
                 <span>
                   {caseItem.type} · {caseItem.requestor}
                 </span>
+                {enriched?.slaInfo && (
+                  <div style={{ marginTop: "0.4rem" }}>
+                    <SlaChip
+                      state={enriched.slaInfo.state}
+                      daysRemaining={enriched.slaInfo.daysRemaining}
+                      humanLabel={enriched.slaInfo.humanLabel}
+                      citation={enriched.slaInfo.citation}
+                    />
+                  </div>
+                )}
               </div>
               <form action={updateRightsCaseAction.bind(null, workspace.tenant.slug, caseItem.id)} className="compact-inline-form">
                 <select name="status" defaultValue={caseItem.status}>
@@ -460,7 +591,8 @@ export function ModuleView({
                 </form>
               </div>
             </article>
-          ))}
+            );
+          })}
 
           {/* Rights Agent Review Queue */}
           {(workspace.agentActions || []).filter((a) => a.agentId === "rights-orchestrator").length > 0 && (
@@ -578,6 +710,26 @@ export function ModuleView({
 
       {moduleId === "incidents" && (
         <section className="worksheet">
+          {adminData?.dpoInbox && (
+            <div style={{ marginBottom: "1.25rem" }}>
+              <DpoInboxPanel
+                pulseScore={adminData.dpoInbox.pulseScore}
+                totalOpen={adminData.dpoInbox.totalOpen}
+                counts={adminData.dpoInbox.counts}
+                items={adminData.dpoInbox.items}
+                generatedAt={adminData.dpoInbox.generatedAt}
+              />
+            </div>
+          )}
+          {adminData?.anomalies && (
+            <div style={{ marginBottom: "1.25rem" }}>
+              <AnomalyPanel
+                tenantSlug={workspace.tenant.slug}
+                alerts={adminData.anomalies.alerts}
+                scannedFlash={Boolean(flash?.anomalyScanned)}
+              />
+            </div>
+          )}
           <FlashStatus
             flash={flash}
             updatedValue="incident"
@@ -781,6 +933,24 @@ export function ModuleView({
 
       {moduleId === "setup" && (
         <section className="worksheet">
+          {adminData?.siemKeys && (
+            <SiemKeysPanel
+              tenantSlug={workspace.tenant.slug}
+              keys={adminData.siemKeys.keys}
+              flashRawKey={flash?.siemNew}
+              flashRevokedKeyId={flash?.siemRevoked}
+              flashError={flash?.siemErr}
+            />
+          )}
+          {adminData?.webhookSubs && adminData?.webhookDeliveries && (
+            <WebhooksPanel
+              tenantSlug={workspace.tenant.slug}
+              subscriptions={adminData.webhookSubs.subscriptions}
+              deliveries={adminData.webhookDeliveries.deliveries}
+              flashOk={Boolean(flash?.whOk)}
+              flashError={flash?.whErr}
+            />
+          )}
           <FlashStatus
             flash={flash}
             updatedValue="setup-profile"
@@ -931,6 +1101,23 @@ export function ModuleView({
 
       {moduleId === "reports" && (
         <section className="worksheet">
+          {adminData?.firms && adminData.apiBase && (
+            <CompliancePackExport
+              tenantSlug={workspace.tenant.slug}
+              apiBase={adminData.apiBase}
+              bearerHint={adminData.bearerHint ?? "<your-session-token>"}
+              firms={adminData.firms.firms}
+            />
+          )}
+          {adminData?.dpiaResults && (
+            <DpiaPanel
+              tenantSlug={workspace.tenant.slug}
+              results={adminData.dpiaResults.dpiaResults}
+              flashOk={flash?.dpiaOk}
+              flashRisk={flash?.dpiaRisk}
+              flashError={flash?.dpiaErr}
+            />
+          )}
           <div className="split-ledger">
             <div>
               <span className="section-kicker">Export set</span>
