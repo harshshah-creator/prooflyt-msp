@@ -63,7 +63,12 @@ interface DetectorRule {
 
 function mask(raw: string, keepStart = 2, keepEnd = 4): string {
   if (raw.length <= keepStart + keepEnd) return "*".repeat(raw.length);
-  return raw.slice(0, keepStart) + "*".repeat(raw.length - keepStart - keepEnd) + raw.slice(-keepEnd);
+  // Note: `raw.slice(-0)` returns the FULL string (since -0 === 0 in JS).
+  // We must call slice(-keepEnd) only when keepEnd > 0; otherwise the
+  // tail-keep degenerates into "leak the entire raw value", which on
+  // Aadhaar means the 12-digit number leaks into the masked field.
+  const tail = keepEnd > 0 ? raw.slice(-keepEnd) : "";
+  return raw.slice(0, keepStart) + "*".repeat(raw.length - keepStart - keepEnd) + tail;
 }
 
 /**
