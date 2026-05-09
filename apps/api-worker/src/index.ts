@@ -81,6 +81,7 @@ import {
   persistAlerts,
   listPersistedAlerts,
 } from "./audit-anomaly.js";
+import { issueConsentReceipt, renderConsentWidgetJs } from "./consent-widget.js";
 import type { ConnectorType } from "@prooflyt/contracts";
 
 /* ------------------------------------------------------------------ */
@@ -2311,6 +2312,58 @@ export default {
           const verified = await verifyTurnstile(env, body.turnstileToken || null);
           if (!verified) return json({ error: "Turnstile verification failed." }, 403);
           return json(await withState(env, (s) => handleAcknowledgeNotice(s, p.slug)), 201);
+        }
+      }
+      /* ---------- Consent widget — embeddable JS + ISO/IEC 27560 receipts ---------- */
+      {
+        const p = match("/api/public/:slug/consent/widget.js", pathname);
+        if (p && request.method === "GET") {
+          // No auth — this is the snippet customers paste on their site.
+          const apiBase = `${url.protocol}//${url.host}/api`;
+          const noticeUrl = `${url.protocol}//${url.host}/public/${p.slug}/notice`;
+          const js = renderConsentWidgetJs({ apiBase, tenantSlug: p.slug, noticeUrl });
+          return new Response(js, {
+            status: 200,
+            headers: {
+              "content-type": "application/javascript; charset=utf-8",
+              "cache-control": "public, max-age=300",
+              ...corsHeadersFor(_currentOrigin),
+            },
+          });
+        }
+      }
+      {
+        const p = match("/api/public/:slug/consent/receipts", pathname);
+        if (p && request.method === "POST") {
+          const body = await parseBody<{
+            subjectIdentifier: string;
+            purposes: Array<{ id: string; granted: boolean }>;
+            locale?: string;
+            userAgent?: string;
+          }>(request);
+          const ip =
+            request.headers.get("cf-connecting-ip") ||
+            request.headers.get("x-forwarded-for") ||
+            "";
+          return json(
+            await withState(env, async (s) => {
+              const workspace = ensureWorkspace(s, p.slug);
+              return issueConsentReceipt(workspace, { ...body, ip });
+            }),
+            201,
+          );
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/consent/receipts", pathname);
+        if (p && request.method === "GET") {
+          return json(
+            await withState(env, (s) => {
+              const { workspace } = ensureTenantAccess(s, p.slug, auth);
+              const ws = workspace as any;
+              return { receipts: (ws.consentReceipts || []).slice(0, 200) };
+            }),
+          );
         }
       }
 
