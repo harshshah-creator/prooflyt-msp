@@ -81,6 +81,14 @@ import {
   persistAlerts,
   listPersistedAlerts,
 } from "./audit-anomaly.js";
+import { applyAutoSeverity, escalateOverdueAssessments } from "./breach-rules.js";
+import {
+  renderReport,
+  isReportType,
+  isReportFormat,
+  REPORT_TYPES,
+  REPORT_FORMATS,
+} from "./reports.js";
 import { issueConsentReceipt, renderConsentWidgetJs } from "./consent-widget.js";
 import { scanForPii, scanForPiiSmart } from "./pii-scanner.js";
 import {
@@ -1101,7 +1109,13 @@ function handleIncidentUpdate(
   state: AppState,
   tenantSlug: string,
   incidentId: string,
-  body: { status: Incident["status"]; evidenceLinked?: boolean; remediationOwner?: string },
+  body: {
+    status: Incident["status"];
+    evidenceLinked?: boolean;
+    remediationOwner?: string;
+    affectedCount?: number;
+    discoveryDate?: string;
+  },
   authHeader?: string,
 ) {
   const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
@@ -1110,6 +1124,20 @@ function handleIncidentUpdate(
   incident.status = body.status;
   incident.evidenceLinked = Boolean(body.evidenceLinked);
   incident.remediationOwner = body.remediationOwner?.trim() || incident.remediationOwner;
+  if (typeof body.affectedCount === "number" && body.affectedCount >= 0) {
+    incident.affectedCount = body.affectedCount;
+  }
+  if (body.discoveryDate) incident.discoveryDate = body.discoveryDate;
+
+  // JVA Schedule 1 §S1.9 + Annexure A §A9.6: affected_count > 1,000 →
+  // auto-raise severity to at least HIGH. The rule runs every update so
+  // adjusting affectedCount upward later still triggers it.
+  const raised = applyAutoSeverity(incident);
+  if (raised) {
+    appendAudit(workspace, user, "incidents", "INCIDENT_AUTO_ELEVATED", incidentId,
+      `Auto-elevated to ${incident.severity} — affected_count ${incident.affectedCount?.toLocaleString("en-IN")} exceeds the 1,000-principal threshold (§S1.9).`);
+  }
+
   appendAudit(workspace, user, "incidents", "INCIDENT_UPDATED", incidentId, `Moved ${incident.title} to ${body.status}.`);
   updateObligation(workspace, "incidents", {
     readiness: body.status === "CLOSED" ? 85 : 74,
@@ -1119,6 +1147,32 @@ function handleIncidentUpdate(
   });
   syncMetrics(workspace);
   return { ok: true, incident };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Breach 72-hour assessment escalation (§S1.9 / §A9.6)                */
+/* ------------------------------------------------------------------ */
+
+/**
+ *  Manual + cron-callable handler. Walks every TRIAGE-status incident,
+ *  flips severity to ≥HIGH and `autoEscalated=true` for any breach whose
+ *  `discoveryDate` is older than 72 hours. Emits one audit entry per
+ *  escalation; idempotent thanks to the `autoEscalated` flag.
+ */
+function handleBreachEscalationSweep(state: AppState, tenantSlug: string, authHeader?: string) {
+  const { user, workspace } = ensureTenantAccess(state, tenantSlug, authHeader);
+  if (!user.internalAdmin && !user.roles.some((r) =>
+    ["TENANT_ADMIN", "COMPLIANCE_MANAGER", "SECURITY_OWNER"].includes(r),
+  )) {
+    throw new HttpError(403, "Breach escalation is restricted by role.");
+  }
+  const outcomes = escalateOverdueAssessments(workspace);
+  for (const o of outcomes) {
+    appendAudit(workspace, user, "incidents", "INCIDENT_72H_ESCALATED", o.incidentId,
+      `Auto-escalated after ${o.hoursSinceDiscovery}h without assessment; severity ${o.previousSeverity} → HIGH per §S1.9.`);
+  }
+  if (outcomes.length > 0) syncMetrics(workspace);
+  return { ok: true, outcomes };
 }
 
 /* ------------------------------------------------------------------ */
@@ -2439,6 +2493,13 @@ export default {
           return json(await withState(env, (s) => handleIncidentUpdate(s, p.slug, p.incidentId, body, auth)));
         }
       }
+      {
+        // §S1.9: 72-hour escalation sweep. Run manually or via cron.
+        const p = match("/api/portal/:slug/incidents/escalation-sweep", pathname);
+        if (request.method === "POST" && p) {
+          return json(await withState(env, (s) => handleBreachEscalationSweep(s, p.slug, auth)));
+        }
+      }
 
       /* ---------- Anomaly detection ---------- */
       {
@@ -2718,6 +2779,54 @@ export default {
         // a dropdown without hard-coding values.
         if (request.method === "GET" && pathname === "/api/portal/compliance-pack/firms") {
           return json({ ok: true, firms: SUPPORTED_FIRMS });
+        }
+      }
+
+      /* ---------- Named reports (§A7.10 + §A12) ----------
+       *
+       * Six required report types per JVA Annexure A §A7.10 + §A12. Each
+       * is emitted in 4 formats (json | csv | xlsx | pdf) so auditors can
+       * pivot into Excel, board decks, GRC tools, or printed binders
+       * without bespoke export tooling.
+       */
+      {
+        // Discovery — list the catalogue so the UI can render a dropdown.
+        if (request.method === "GET" && pathname === "/api/portal/reports/catalogue") {
+          return json({ ok: true, reports: REPORT_TYPES, formats: REPORT_FORMATS });
+        }
+      }
+      {
+        const p = match("/api/portal/:slug/reports/:reportType", pathname);
+        if (request.method === "GET" && p) {
+          const format = (url.searchParams.get("format") ?? "json").toLowerCase();
+          const since = url.searchParams.get("since") ?? undefined;
+          if (!isReportType(p.reportType)) {
+            throw new HttpError(400, `Unknown report type. Valid: ${REPORT_TYPES.join(", ")}.`);
+          }
+          if (!isReportFormat(format)) {
+            throw new HttpError(400, `Unknown format. Valid: ${REPORT_FORMATS.join(", ")}.`);
+          }
+          const rendered = await withState(env, (s) => {
+            const { workspace } = ensureTenantAccess(s, p.slug, auth);
+            return renderReport(workspace, p.slug, p.reportType as any, format as any, { since });
+          });
+          // JSON gets returned as-is so the dev console can pretty-print
+          // it; CSV/XLSX/PDF get content-disposition: attachment so the
+          // browser saves them with the right extension.
+          const isJson = format === "json";
+          const body = rendered.body as any;
+          return new Response(body instanceof Uint8Array ? body : body, {
+            status: 200,
+            headers: {
+              "content-type": rendered.contentType,
+              ...(isJson
+                ? {}
+                : {
+                    "content-disposition": `attachment; filename="${rendered.fileName}"`,
+                  }),
+              "cache-control": "no-store",
+            },
+          });
         }
       }
 

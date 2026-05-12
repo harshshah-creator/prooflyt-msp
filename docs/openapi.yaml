@@ -1,0 +1,664 @@
+openapi: 3.0.3
+info:
+  title: Prooflyt DPDP Compliance Desk API
+  version: "1.0.0"
+  description: |
+    Public API for the Prooflyt DPDP Compliance Desk platform. Covers all
+    twelve endpoint groups required by **JVA Schedule 1 §S1.8(e) +
+    Annexure A §A12**.
+
+    Authentication is bearer-token: every authenticated request must carry
+    `Authorization: Bearer <token>` where the token is either a session
+    minted by `POST /auth/login` (rotates on use, 12h absolute / 60min
+    idle) or a long-lived audit-export key (prefix `pflyt_ak_`).
+
+    All endpoints enforce **tenant isolation at the workspace layer**: a
+    bearer token scoped to tenant A cannot read or mutate tenant B data.
+
+    Privacy guarantees encoded in this contract:
+      - No raw PII is ever returned over unauthenticated routes.
+      - The audit-log SIEM stream emits **masked-only** fields (no raw PII).
+      - All write operations append to an **immutable audit trail**
+        (§A9.8 — no deletion or editing of any audit entry through any
+        interface).
+
+    DPDP citations are inline on each path so a regulator can map this
+    contract to the statute without leaving the document.
+  contact:
+    name: Prooflyt Platform Team
+    email: platform@prooflyt.example
+  license:
+    name: Proprietary — JVA Schedule 1 §S1.8
+servers:
+  - url: https://prooflyt-msp-api.harshshah-5d8.workers.dev/api
+    description: Production worker
+  - url: http://localhost:4011/api
+    description: Local dev (wrangler)
+
+tags:
+  - name: 1. Auth & Tenant
+  - name: 2. Users & Roles
+  - name: 3. Sources & Files
+  - name: 4. Field Classification
+  - name: 5. Data Register
+  - name: 6. Notices
+  - name: 7. Rights Cases
+  - name: 8. Retention & Deletion
+  - name: 9. Breach Register
+  - name: 10. Processors
+  - name: 11. Evidence & Audit Trail
+  - name: 12. Reports
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: session-token | pflyt_ak_<hex>
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, example: "Missing bearer token." }
+
+    Tenant:
+      type: object
+      properties:
+        id:         { type: string }
+        slug:       { type: string, example: bombay-grooming-labs }
+        name:       { type: string, example: Bombay Grooming Labs }
+        industry:   { type: string }
+        descriptor: { type: string }
+        active:     { type: boolean }
+        publicBrand:
+          type: object
+          properties:
+            logoText:     { type: string, maxLength: 4 }
+            primaryColor: { type: string, pattern: '^#(?:[0-9a-fA-F]{3}){1,2}$' }
+            accentColor:  { type: string, pattern: '^#(?:[0-9a-fA-F]{3}){1,2}$' }
+            publicDomain: { type: string }
+
+    Role:
+      type: string
+      enum: [TENANT_ADMIN, COMPLIANCE_MANAGER, DEPARTMENT_OWNER, REVIEWER, CASE_HANDLER, SECURITY_OWNER, AUDITOR, PLATFORM_ADMIN]
+
+    User:
+      type: object
+      required: [id, email, name, roles]
+      properties:
+        id:            { type: string }
+        email:         { type: string, format: email }
+        name:          { type: string }
+        roles:         { type: array, items: { $ref: '#/components/schemas/Role' } }
+        title:         { type: string }
+        tenantSlug:    { type: string, nullable: true }
+        internalAdmin: { type: boolean }
+
+    DataSource:
+      type: object
+      properties:
+        id:           { type: string }
+        name:         { type: string }
+        fileName:     { type: string }
+        profileMode:  { type: string, enum: [HEADER_ONLY, MASKED_SAMPLE, EPHEMERAL_FULL] }
+        status:       { type: string, enum: [INGESTED, IN_REVIEW, APPROVED] }
+        fields:       { type: integer }
+        approvedFields: { type: integer }
+
+    FieldClassification:
+      type: object
+      properties:
+        id:               { type: string }
+        sourceId:         { type: string }
+        fieldName:        { type: string }
+        mappedCategory:   { type: string }
+        identifierType:   { type: string }
+        confidence:       { type: number, format: float, minimum: 0, maximum: 1 }
+        purpose:          { type: string }
+        legalBasis:       { type: string }
+        retentionLabel:   { type: string }
+        requiresReview:   { type: boolean }
+        warnings:         { type: array, items: { type: string } }
+
+    RegisterEntry:
+      type: object
+      properties:
+        id:            { type: string }
+        system:        { type: string }
+        dataCategory:  { type: string }
+        purpose:       { type: string }
+        legalBasis:    { type: string }
+        retentionLabel: { type: string }
+        lifecycle:     { type: string, enum: [DRAFT, IN_REVIEW, APPROVED, ARCHIVED] }
+        completeness:  { type: string, enum: [PARTIAL, COMPLETE] }
+
+    Notice:
+      type: object
+      properties:
+        id:               { type: string }
+        title:            { type: string }
+        audience:         { type: string }
+        language:         { type: string }
+        version:          { type: string }
+        status:           { type: string, enum: [DRAFT, IN_REVIEW, APPROVED, PUBLISHED, RETIRED] }
+        content:          { type: string }
+        acknowledgements: { type: integer }
+
+    RightsCase:
+      type: object
+      properties:
+        id:                    { type: string, example: RR-2026-014 }
+        type:                  { type: string, enum: [ACCESS, CORRECTION, DELETION, PORTABILITY, GRIEVANCE, WITHDRAWAL], description: "DPDP rights enumerated in JVA Schedule 1 §S1.4 Module 6." }
+        requestor:             { type: string }
+        status:                { type: string, enum: [NEW, IN_PROGRESS, AWAITING_PROOF, CLOSED] }
+        sla:                   { type: string }
+        evidenceLinked:        { type: boolean }
+        linkedDeletionTaskId:  { type: string, nullable: true }
+
+    DeletionTask:
+      type: object
+      properties:
+        id:                     { type: string, example: DEL-22 }
+        label:                  { type: string }
+        system:                 { type: string }
+        dueDate:                { type: string, format: date }
+        status:                 { type: string, enum: [SCHEDULED, AWAITING_PROCESSOR, READY_FOR_PROOF, LEGAL_HOLD, CLOSED] }
+        proofLinked:            { type: boolean }
+        processorAcknowledged:  { type: boolean }
+
+    Incident:
+      type: object
+      properties:
+        id:                { type: string, example: INC-402 }
+        title:             { type: string }
+        status:            { type: string, enum: [TRIAGE, ASSESSMENT, CONTAINMENT, CLOSED] }
+        severity:          { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+        boardDeadline:     { type: string }
+        remediationOwner:  { type: string }
+        evidenceLinked:    { type: boolean }
+        affectedCount:     { type: integer, description: "If > 1,000 → severity auto-clamped to HIGH+ per §S1.9." }
+        discoveryDate:     { type: string, format: date-time }
+        autoEscalated:     { type: boolean, description: "True once the 72-hour escalation has fired." }
+
+    Processor:
+      type: object
+      properties:
+        id:                  { type: string }
+        name:                { type: string }
+        service:             { type: string }
+        dpaStatus:           { type: string, enum: [SIGNED, IN_REVIEW, MISSING] }
+        purgeAckStatus:      { type: string, enum: [ACKNOWLEDGED, PENDING] }
+        subProcessorCount:   { type: integer }
+
+    EvidenceArtifact:
+      type: object
+      properties:
+        id:               { type: string }
+        label:            { type: string }
+        classification:   { type: string, enum: [SYSTEM_DERIVED, UPLOADED, ATTESTATION] }
+        linkedRecord:     { type: string }
+        createdAt:        { type: string, format: date-time }
+        contentIndexed:   { type: boolean }
+        fileName:         { type: string }
+        contentType:      { type: string }
+        sizeBytes:        { type: integer }
+
+    AuditEvent:
+      type: object
+      properties:
+        id:         { type: string }
+        createdAt:  { type: string, format: date-time }
+        actor:      { type: string }
+        module:     { type: string }
+        action:     { type: string }
+        targetId:   { type: string }
+        summary:    { type: string }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Authenticated but role does not permit this operation.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found in this tenant.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+paths:
+  # ════════ Group 1 — Auth & Tenant ════════
+  /auth/login:
+    post:
+      tags: ['1. Auth & Tenant']
+      summary: Mint a session bearer token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:    { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Session minted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    type: object
+                    properties:
+                      token:        { type: string }
+                      userId:       { type: string }
+                      tenantSlug:   { type: string }
+                      createdAt:    { type: string, format: date-time }
+                      lastSeenAt:   { type: string, format: date-time }
+                      expiresAt:    { type: string, format: date-time }
+                  user:   { $ref: '#/components/schemas/User' }
+                  tenant: { $ref: '#/components/schemas/Tenant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout:
+    post:
+      tags: ['1. Auth & Tenant']
+      summary: Invalidate the current session
+      responses:
+        '200':
+          description: Session revoked.
+
+  /portal/{slug}/bootstrap:
+    get:
+      tags: ['1. Auth & Tenant']
+      summary: Workspace bootstrap (sidebar, modules, masters, metrics)
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Complete workspace state for the authenticated user.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ════════ Group 2 — Users & Roles ════════
+  /portal/{slug}/users/invite:
+    post:
+      tags: ['2. Users & Roles']
+      summary: Invite a team member by email
+      parameters:
+        - { in: path, name: slug, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, roles]
+              properties:
+                email: { type: string, format: email }
+                roles: { type: array, items: { $ref: '#/components/schemas/Role' } }
+                title: { type: string }
+      responses:
+        '200':
+          description: Invite minted.
+
+  /portal/{slug}/users/{userId}/roles:
+    post:
+      tags: ['2. Users & Roles']
+      summary: Update roles for a team member
+      parameters:
+        - { in: path, name: slug,   required: true, schema: { type: string } }
+        - { in: path, name: userId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                roles: { type: array, items: { $ref: '#/components/schemas/Role' } }
+      responses:
+        '200':
+          description: Roles updated.
+
+  # ════════ Group 3 — Sources & Files ════════
+  /portal/{slug}/sources/upload:
+    post:
+      tags: ['3. Sources & Files']
+      summary: Upload a CSV / XLS / XLSX (max 100MB) and start profiling
+      parameters:
+        - { in: path, name: slug, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [mode, file]
+              properties:
+                mode: { type: string, enum: [HEADER_ONLY, MASKED_SAMPLE, EPHEMERAL_FULL] }
+                file: { type: string, format: binary }
+      responses:
+        '201': { description: Profiling started; source created. }
+
+  # ════════ Group 4 — Field Classification ════════
+  /portal/{slug}/sources/{sourceId}/classifications:
+    get:
+      tags: ['4. Field Classification']
+      summary: List AI classifications for a source
+      parameters:
+        - { in: path, name: slug,     required: true, schema: { type: string } }
+        - { in: path, name: sourceId, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Classifications with confidence + human-review state.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/FieldClassification' }
+
+  /portal/{slug}/sources/{sourceId}/classifications/{fieldId}:
+    post:
+      tags: ['4. Field Classification']
+      summary: Approve or override a single classification (human-in-the-loop)
+      parameters:
+        - { in: path, name: slug,     required: true, schema: { type: string } }
+        - { in: path, name: sourceId, required: true, schema: { type: string } }
+        - { in: path, name: fieldId,  required: true, schema: { type: string } }
+
+  # ════════ Group 5 — Data Register ════════
+  /portal/{slug}/register:
+    get:
+      tags: ['5. Data Register']
+      summary: List all approved register entries
+      parameters:
+        - { in: path, name: slug, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Field-level inventory.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RegisterEntry' }
+
+  /portal/{slug}/register/{entryId}/lifecycle:
+    post:
+      tags: ['5. Data Register']
+      summary: Advance/return a register entry through DRAFT → IN_REVIEW → APPROVED
+      parameters:
+        - { in: path, name: slug,    required: true, schema: { type: string } }
+        - { in: path, name: entryId, required: true, schema: { type: string } }
+
+  # ════════ Group 6 — Notices ════════
+  /portal/{slug}/notices:
+    post:
+      tags: ['6. Notices']
+      summary: Create a new notice draft
+      parameters:
+        - { in: path, name: slug, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, content, audience]
+              properties:
+                title:    { type: string }
+                content:  { type: string }
+                audience: { type: string }
+      responses:
+        '201': { description: Notice created. }
+
+  /portal/{slug}/notices/{noticeId}/update:
+    post:
+      tags: ['6. Notices']
+      summary: Update notice content / title / audience / status
+      parameters:
+        - { in: path, name: slug,     required: true, schema: { type: string } }
+        - { in: path, name: noticeId, required: true, schema: { type: string } }
+
+  /portal/{slug}/notices/{noticeId}/analyze:
+    post:
+      tags: ['6. Notices']
+      summary: Run the DPDP Rule 3 gap analyzer (extra — beyond §A12)
+      parameters:
+        - { in: path, name: slug,     required: true, schema: { type: string } }
+        - { in: path, name: noticeId, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Coverage report + missing-item drafts.
+
+  # ════════ Group 7 — Rights Cases ════════
+  /public/{slug}/rights:
+    post:
+      tags: ['7. Rights Cases']
+      summary: Public rights-request form (no login)
+      security: []
+      parameters:
+        - { in: path, name: slug, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, type, message]
+              properties:
+                name:    { type: string }
+                email:   { type: string, format: email }
+                type:    { type: string, enum: [ACCESS, CORRECTION, DELETION, PORTABILITY, GRIEVANCE, WITHDRAWAL] }
+                message: { type: string }
+                turnstileToken: { type: string }
+      responses:
+        '201': { description: Case created. }
+        '403': { description: Turnstile verification failed. }
+
+  /portal/{slug}/rights/sla:
+    get:
+      tags: ['7. Rights Cases']
+      summary: SLA snapshot with statutory window per case type
+      parameters:
+        - { in: path, name: slug, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: |
+            Summary stats + per-case enrichment.
+            Statutory windows applied per JVA Schedule 1 §S1.9:
+            ACCESS=30d, CORRECTION=30d, DELETION=45d, PORTABILITY=30d, GRIEVANCE=30d, WITHDRAWAL=7d.
+
+  /portal/{slug}/rights/sla/escalate:
+    post:
+      tags: ['7. Rights Cases']
+      summary: Run the SLA escalation pass (idempotent within UTC day)
+      parameters:
+        - { in: path, name: slug, required: true, schema: { type: string } }
+
+  # ════════ Group 8 — Retention & Deletion ════════
+  /portal/{slug}/retention/run:
+    post:
+      tags: ['8. Retention & Deletion']
+      summary: Manual retention-enforcement pass
+      description: |
+        Daily cron runs this automatically at 02:00 UTC. Manual route lets a
+        tenant admin trigger a sweep on demand. §S1.9 bulk-delete batch
+        limit: max 10,000 records per sweep; remainder defers to next run.
+      parameters:
+        - { in: path, name: slug, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dryRun:  { type: boolean }
+                taskIds: { type: array, items: { type: string } }
+
+  /portal/{slug}/retention/tasks/{taskId}/legal-hold:
+    post:
+      tags: ['8. Retention & Deletion']
+      summary: Apply or release a Legal Hold on a deletion task
+      parameters:
+        - { in: path, name: slug,   required: true, schema: { type: string } }
+        - { in: path, name: taskId, required: true, schema: { type: string } }
+
+  # ════════ Group 9 — Breach Register ════════
+  /portal/{slug}/incidents/{incidentId}/update:
+    post:
+      tags: ['9. Breach Register']
+      summary: Update breach incident status / severity / affected count
+      description: |
+        §S1.9 auto-rule: setting `affectedCount > 1000` auto-clamps
+        severity floor to HIGH (CRITICAL if > 100k).
+      parameters:
+        - { in: path, name: slug,       required: true, schema: { type: string } }
+        - { in: path, name: incidentId, required: true, schema: { type: string } }
+
+  /portal/{slug}/incidents/escalation-sweep:
+    post:
+      tags: ['9. Breach Register']
+      summary: 72-hour assessment escalation sweep
+      description: |
+        §S1.9: breaches in TRIAGE status whose discoveryDate is > 72h ago
+        auto-escalate. Idempotent via the `autoEscalated` flag.
+      parameters:
+        - { in: path, name: slug, required: true, schema: { type: string } }
+
+  # ════════ Group 10 — Processors ════════
+  /portal/{slug}/processors/{processorId}/update:
+    post:
+      tags: ['10. Processors']
+      summary: Update DPA status, purge acknowledgement, sub-processor count
+      parameters:
+        - { in: path, name: slug,        required: true, schema: { type: string } }
+        - { in: path, name: processorId, required: true, schema: { type: string } }
+
+  /portal/{slug}/processors/{processorId}/dpa:
+    get:
+      tags: ['10. Processors']
+      summary: Generate a DPDP-tailored DPA Markdown for this processor
+      parameters:
+        - { in: path, name: slug,        required: true, schema: { type: string } }
+        - { in: path, name: processorId, required: true, schema: { type: string } }
+
+  # ════════ Group 11 — Evidence & Audit Trail ════════
+  /portal/{slug}/evidence:
+    post:
+      tags: ['11. Evidence & Audit Trail']
+      summary: Upload a sealed evidence artifact
+      parameters:
+        - { in: path, name: slug, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [label, file]
+              properties:
+                label: { type: string }
+                file:  { type: string, format: binary }
+
+  /audit-export/stream:
+    get:
+      tags: ['11. Evidence & Audit Trail']
+      summary: Streaming NDJSON of audit events for SIEM ingestion
+      security:
+        - bearerAuth: []
+      parameters:
+        - { in: query, name: since, schema: { type: string, format: date-time } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 5000 } }
+      responses:
+        '200':
+          description: One JSON object per line. Suitable for Splunk HEC / Datadog Logs / Elastic.
+          headers:
+            x-prooflyt-count:        { schema: { type: integer } }
+            x-prooflyt-next-cursor:  { schema: { type: string } }
+            x-prooflyt-exhausted:    { schema: { type: boolean } }
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                example: |
+                  {"@timestamp":"2026-05-09T14:20:58.535Z","source":"prooflyt","tenantSlug":"bombay-grooming-labs","auditId":"audit-1778336458535-1","actor":"Arjun Mehta","module":"setup","action":"AUDIT_EXPORT_KEY_CREATED","targetId":"ak-w50mei8f","summary":"Audit export key minted for \"Smoke test\"."}
+
+  # ════════ Group 12 — Reports ════════
+  /portal/{slug}/reports/{reportType}:
+    get:
+      tags: ['12. Reports']
+      summary: Generate one of the 6 named report types
+      description: |
+        JVA Annexure A §A7.10 — the 6 mandatory report types:
+        register-completeness, open-rights, due-deletions, incident-register,
+        audit-extract, processor-status.
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+        - in: path
+          name: reportType
+          required: true
+          schema:
+            type: string
+            enum:
+              - register-completeness
+              - open-rights
+              - due-deletions
+              - incident-register
+              - audit-extract
+              - processor-status
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, csv, xlsx, pdf]
+            default: json
+      responses:
+        '200':
+          description: Report bytes in the requested format.
+
+  /portal/{slug}/export/compliance-pack:
+    get:
+      tags: ['12. Reports']
+      summary: Auditor-firm-flavoured Compliance Pack (multipart bundle)
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+        - in: query
+          name: firm
+          schema:
+            type: string
+            enum: [generic, kpmg, ey, pwc, deloitte, grantthornton]
+            default: generic
+      responses:
+        '200':
+          description: multipart/mixed bundle with cover sheet + CSV/JSON members.
+          headers:
+            x-prooflyt-firm-template:
+              schema: { type: string }
+          content:
+            multipart/mixed:
+              schema:
+                type: string

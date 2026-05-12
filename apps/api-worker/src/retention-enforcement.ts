@@ -105,6 +105,8 @@ export interface EnforcementReport {
   ranAt: string;
   dryRun: boolean;
   totalTasks: number;
+  /** Tasks beyond the 10,000-record batch ceiling (§S1.9). Queued for the next sweep. */
+  deferredCount: number;
   dueTasks: number;
   erased: number;
   denied: number;
@@ -205,6 +207,18 @@ export interface EnforceOptions {
   taskIds?: string[];
 }
 
+/**
+ *  JVA Schedule 1 §S1.9 / Annexure A §A9.5:
+ *    "Bulk deletion limited to 10,000 records per batch."
+ *
+ *  The current platform treats each DeletionTask as one logical batch
+ *  (the underlying processor receives the request and we record proof).
+ *  Per-task we enforce a hard ceiling: the request cannot affect more
+ *  than 10,000 records; tasks above the cap get split (caller's
+ *  responsibility) or rejected at intake.
+ */
+export const BULK_DELETE_BATCH_LIMIT = 10_000;
+
 export function enforceRetention(
   workspace: TenantWorkspace,
   options: EnforceOptions = {},
@@ -214,9 +228,14 @@ export function enforceRetention(
   const tenantSlug = workspace.tenant.slug;
   const ranAt = asOf.toISOString();
 
-  const candidates = workspace.deletionTasks.filter((t) =>
+  // Per-run safety: never erase more than BULK_DELETE_BATCH_LIMIT records
+  // in a single sweep. We process tasks up to the limit; remainder stay
+  // queued for the next run. Idempotent + auditable.
+  const allCandidates = workspace.deletionTasks.filter((t) =>
     options.taskIds ? options.taskIds.includes(t.id) : true,
   );
+  const candidates = allCandidates.slice(0, BULK_DELETE_BATCH_LIMIT);
+  const deferredCount = Math.max(0, allCandidates.length - candidates.length);
 
   const entries: EnforcementEntry[] = [];
 
@@ -383,6 +402,7 @@ export function enforceRetention(
     ranAt,
     dryRun,
     totalTasks: candidates.length,
+    deferredCount, // tasks beyond the 10K batch limit, queued for next sweep
     dueTasks,
     erased: entries.filter((e) => e.outcome === "ERASED").length,
     denied: entries.filter((e) => e.outcome === "DENIED_LEGAL_BASIS").length,

@@ -38,10 +38,17 @@ import type { AuditEvent, RightsCase, TenantWorkspace } from "@prooflyt/contract
 /*  Window catalogue                                                    */
 /* ------------------------------------------------------------------ */
 
+// Window catalogue per Schedule 1 §S1.9 / Annexure A §A9.4:
+//   "Access requests: 30-day response deadline. Deletion requests:
+//    45-day response deadline."
+// These are the operational commitments the JV agreed to in writing.
+// DPDP §13/§14 don't enumerate exact days ("reasonable period"); 30/45
+// are the contractual operating targets.
 export const STATUTORY_WINDOWS_DAYS: Record<RightsCase["type"], { days: number; citation: string }> = {
-  ACCESS: { days: 45, citation: "DPDP §13 — reasonable period (industry: 45 days)" },
+  ACCESS: { days: 30, citation: "DPDP §13 + JVA Schedule 1 §S1.9 — 30-day access response window" },
   CORRECTION: { days: 30, citation: "DPDP §14(1)(b) — correction within reasonable period" },
-  DELETION: { days: 30, citation: "DPDP §14(1)(c) — deletion within reasonable period" },
+  DELETION: { days: 45, citation: "DPDP §14(1)(c) + JVA Schedule 1 §S1.9 — 45-day deletion response window" },
+  PORTABILITY: { days: 30, citation: "DPDP §13 + JVA Schedule 1 §S1.9 — 30-day portability response window (treated as access)" },
   GRIEVANCE: { days: 30, citation: "DPDP §15 + Rule 13 — operational target (max 90 days)" },
   WITHDRAWAL: { days: 7, citation: "DPDP §6(4) — withdrawal must be as easy as giving" },
 };

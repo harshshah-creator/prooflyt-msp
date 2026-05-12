@@ -125,7 +125,14 @@ async function loadAdminDataFor(
       safe(() => listWebhookSubscriptions(tenantSlug, token)),
       safe(() => listWebhookDeliveries(tenantSlug, token)),
     ]);
-    return { siemKeys, webhookSubs, webhookDeliveries, apiBase: API_BASE };
+    // §S2.3 — surface LLM residency mode + endpoint from env to the admin
+    // panel. No raw secrets are sent to the client; only the mode + host.
+    const residencyEnv = process.env.PROOFLYT_LLM_RESIDENCY?.toUpperCase();
+    const llmResidency: { mode: "MANAGED" | "SELF_HOSTED" | "AIR_GAPPED"; endpoint?: string } =
+      residencyEnv === "SELF_HOSTED" || residencyEnv === "AIR_GAPPED"
+        ? { mode: residencyEnv, endpoint: process.env.PROOFLYT_LLM_ENDPOINT }
+        : { mode: "MANAGED" };
+    return { siemKeys, webhookSubs, webhookDeliveries, apiBase: API_BASE, llmResidency };
   }
   if (moduleId === "reports") {
     const [firms, dpiaResults] = await Promise.all([
