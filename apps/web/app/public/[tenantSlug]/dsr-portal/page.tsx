@@ -116,6 +116,7 @@ export default async function DsrPortalPage({
                 <option value="ACCESS">Access — get a copy of my data (DPDP §13)</option>
                 <option value="CORRECTION">Correction — fix a mistake (DPDP §14)</option>
                 <option value="DELETION">Erasure — delete my data (DPDP §14)</option>
+                <option value="PORTABILITY">Portability — machine-readable export (DPDP §13)</option>
                 <option value="WITHDRAWAL">Withdraw consent (DPDP §6)</option>
                 <option value="GRIEVANCE">Grievance — file a complaint (DPDP §15)</option>
               </select>

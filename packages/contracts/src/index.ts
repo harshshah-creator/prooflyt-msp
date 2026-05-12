@@ -162,7 +162,10 @@ export interface Notice {
 
 export interface RightsCase {
   id: string;
-  type: "ACCESS" | "CORRECTION" | "DELETION" | "GRIEVANCE" | "WITHDRAWAL";
+  // DPDP rights enumerated in JVA Schedule 1 §S1.4 / Annexure A §A7.5:
+  // Access (§13), Correction (§14), Deletion/Erasure (§14), Portability,
+  // Grievance Redressal (§15), Consent Withdrawal (§6).
+  type: "ACCESS" | "CORRECTION" | "DELETION" | "PORTABILITY" | "GRIEVANCE" | "WITHDRAWAL";
   requestor: string;
   status: "NEW" | "IN_PROGRESS" | "AWAITING_PROOF" | "CLOSED";
   sla: string;
@@ -188,6 +191,12 @@ export interface Incident {
   boardDeadline: string;
   remediationOwner: string;
   evidenceLinked: boolean;
+  // JVA Schedule 1 §S1.9 / Annexure A §A9.6:
+  //   "Breach with affected_count > 1,000 data subjects automatically
+  //    marked High or Critical severity."
+  affectedCount?: number;
+  discoveryDate?: string; // ISO timestamp — 72-hour timer anchor (§S1.9)
+  autoEscalated?: boolean; // true once auto-escalation to Admin has fired
 }
 
 export interface Processor {

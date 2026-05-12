@@ -45,19 +45,25 @@ const tenant: Tenant = {
   },
 };
 
+// §S1.10 / §A16 demo seed spec: "Readiness Score 67% (7 of 10 obligations
+// with evidence) — demonstrating a realistic mid-journey compliance state."
+// 7 of these 12 obligations are seeded with evidencePresent=true to
+// produce the agreed mid-journey baseline; syncMetrics() will compute
+// readinessScore ≈ 67 on bootstrap.
 const obligations: ObligationBucket[] = [
-  { id: "ob-01", title: "Data inventory", operationalLabel: "Metadata-first register", module: "register", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
-  { id: "ob-02", title: "Privacy notice", operationalLabel: "Versioned transparency", module: "notices", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
-  { id: "ob-03", title: "Rights request handling", operationalLabel: "Case SLA discipline", module: "rights", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
-  { id: "ob-04", title: "Retention schedules", operationalLabel: "Tasked deletion control", module: "retention", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
-  { id: "ob-05", title: "Breach readiness", operationalLabel: "Deadline-aware response", module: "incidents", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
-  { id: "ob-06", title: "Processor governance", operationalLabel: "DPA + purge acknowledgement", module: "processors", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
-  { id: "ob-07", title: "Evidence posture", operationalLabel: "Sealed proof archive", module: "evidence", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
-  { id: "ob-08", title: "Consent proof", operationalLabel: "Evidence-oriented consent records", module: "rights", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
-  { id: "ob-09", title: "Department ownership", operationalLabel: "Named obligation owners", module: "setup", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
-  { id: "ob-10", title: "Source discovery", operationalLabel: "AI-assisted profiling queue", module: "sources", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
-  { id: "ob-11", title: "Reportability", operationalLabel: "Compliance Pack readiness", module: "reports", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
-  { id: "ob-12", title: "Public surface branding", operationalLabel: "Rights and notices with tenant identity", module: "notices", readiness: 0, maturity: 0, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
+  { id: "ob-01", title: "Data inventory",          operationalLabel: "Metadata-first register",              module: "register",   readiness: 72, maturity: 72, ownerPresent: true,  evidencePresent: true,  status: "STRONG"       },
+  { id: "ob-02", title: "Privacy notice",          operationalLabel: "Versioned transparency",                module: "notices",    readiness: 80, maturity: 78, ownerPresent: true,  evidencePresent: true,  status: "STRONG"       },
+  { id: "ob-03", title: "Rights request handling", operationalLabel: "Case SLA discipline",                   module: "rights",     readiness: 65, maturity: 62, ownerPresent: true,  evidencePresent: true,  status: "REVIEWING"    },
+  { id: "ob-04", title: "Retention schedules",     operationalLabel: "Tasked deletion control",               module: "retention",  readiness: 58, maturity: 55, ownerPresent: true,  evidencePresent: true,  status: "UPDATING"     },
+  { id: "ob-05", title: "Breach readiness",        operationalLabel: "Deadline-aware response",               module: "incidents",  readiness: 70, maturity: 66, ownerPresent: true,  evidencePresent: true,  status: "REVIEWING"    },
+  { id: "ob-06", title: "Processor governance",    operationalLabel: "DPA + purge acknowledgement",           module: "processors", readiness: 64, maturity: 60, ownerPresent: true,  evidencePresent: true,  status: "UPDATING"     },
+  { id: "ob-07", title: "Evidence posture",        operationalLabel: "Sealed proof archive",                  module: "evidence",   readiness: 75, maturity: 72, ownerPresent: true,  evidencePresent: true,  status: "STRONG"       },
+  // The 3 obligations still NEEDS_ACTION — mid-journey gaps.
+  { id: "ob-08", title: "Consent proof",           operationalLabel: "Evidence-oriented consent records",     module: "rights",     readiness: 30, maturity: 28, ownerPresent: true,  evidencePresent: false, status: "NEEDS_ACTION" },
+  { id: "ob-09", title: "Department ownership",    operationalLabel: "Named obligation owners",               module: "setup",      readiness: 45, maturity: 40, ownerPresent: false, evidencePresent: false, status: "NEEDS_ACTION" },
+  { id: "ob-10", title: "Source discovery",        operationalLabel: "AI-assisted profiling queue",           module: "sources",    readiness: 50, maturity: 48, ownerPresent: true,  evidencePresent: false, status: "UPDATING"     },
+  { id: "ob-11", title: "Reportability",           operationalLabel: "Compliance Pack readiness",             module: "reports",    readiness: 60, maturity: 55, ownerPresent: true,  evidencePresent: false, status: "REVIEWING"    },
+  { id: "ob-12", title: "Public surface branding", operationalLabel: "Rights and notices with tenant identity", module: "notices",  readiness: 80, maturity: 78, ownerPresent: true,  evidencePresent: false, status: "STRONG"       },
 ];
 
 export const DPDP_MASTER_OBLIGATIONS = [
@@ -129,34 +135,57 @@ const sourceProfiles: SourceFieldProfile[] = [
   { id: "p-6", sourceId: "src-zoho", fieldName: "फोन_नंबर", mappedCategory: "Contact", identifierType: "Direct identifier", confidence: 0.73, purpose: "Customer communications", legalBasis: "Legitimate use", retentionLabel: "24 months", requiresReview: true, warnings: ["Regional language header preserved for reviewer confirmation."] },
 ];
 
+// §S1.10 / §A16 seed spec:
+//   "Privacy notice (published, version 2); SMS consent notice (draft)"
+// We keep the Customer privacy notice (published v2, English) and add an
+// SMS consent notice (draft, English). A third Hindi-translated template
+// satisfies the §S2.3 should-pass "Hindi language notice template" item.
 const notices: Notice[] = [
   {
     id: "notice-customer",
     title: "Customer privacy notice",
     audience: "Customers",
     language: "English",
-    version: "v1.0",
+    version: "v2.0",
+    status: "PUBLISHED",
+    content:
+      "Bombay Grooming Labs collects account, order, support, and consent-related metadata to deliver service, respond to data principal rights under the Digital Personal Data Protection Act, 2023, and maintain security controls. Personal data covered: name, contact details, transactional history, support interactions. Purpose: order fulfilment, customer service, fraud prevention (legitimate use), marketing communications (consent). Retention: 24 months from last interaction; payment records retained 5 years per RBI Storage Direction. Rights: access (§13), correction (§14), erasure (§14), portability (§13 machine-readable copy), grievance redressal (§15), and consent withdrawal (§6). Exercise any right via rights.bombaygrooming.example. Grievance Officer: dpo@bombaygrooming.example.",
+    acknowledgements: 318,
+  },
+  {
+    id: "notice-sms-consent",
+    title: "SMS consent notice",
+    audience: "Customers (transactional SMS opt-in)",
+    language: "English",
+    version: "v0.3",
     status: "DRAFT",
     content:
-      "We collect account, order, support, and consent-related metadata to deliver service, respond to rights requests, and maintain security controls. Prooflyt in Phase 1 records workflow evidence and published notice history.",
+      "By providing your mobile number you authorise Bombay Grooming Labs to send transactional and order-status SMS through MSG91. Marketing SMS requires separate opt-in (Marketing Preferences). Withdraw consent at any time at rights.bombaygrooming.example. Standard SMS rates apply.",
     acknowledgements: 0,
   },
   {
-    id: "notice-employee",
-    title: "Employee privacy notice",
-    audience: "Employees",
-    language: "English",
-    version: "v0.9",
+    id: "notice-customer-hi",
+    title: "ग्राहक गोपनीयता सूचना",
+    audience: "ग्राहक (Customers)",
+    language: "हिन्दी (Hindi)",
+    version: "v1.0",
     status: "DRAFT",
-    content: "Employee data collection notice pending final HR approval.",
+    content:
+      "बॉम्बे ग्रूमिंग लैब्स खाता, ऑर्डर, समर्थन और सहमति-संबंधी मेटाडेटा एकत्र करता है। उद्देश्य: ऑर्डर पूर्ति, ग्राहक सेवा (वैध उपयोग), विपणन (सहमति)। प्रतिधारण: अंतिम बातचीत से 24 महीने; भुगतान रिकॉर्ड RBI निर्देश के तहत 5 वर्ष। अधिकार: पहुँच (§13), सुधार (§14), विलोपन (§14), पोर्टेबिलिटी (§13), शिकायत निवारण (§15), सहमति वापसी (§6)। rights.bombaygrooming.example पर कोई भी अधिकार लागू करें। शिकायत अधिकारी: dpo@bombaygrooming.example।",
     acknowledgements: 0,
   },
 ];
 
+// JVA Schedule 1 §S1.10 + Annexure A §A16 seed spec:
+//   "2 access requests (one open, one closed); 1 deletion request (in progress)"
+// Plus we keep a portability case to exercise the §13 machine-readable
+// export workflow and a grievance case to round out the demo.
 const rightsCases: RightsCase[] = [
-  { id: "RR-2026-014", type: "ACCESS", requestor: "nita.shah@example.com", status: "IN_PROGRESS", sla: "3 days remaining", evidenceLinked: true, linkedDeletionTaskId: null },
-  { id: "RR-2026-015", type: "DELETION", requestor: "rahul.m@example.com", status: "AWAITING_PROOF", sla: "Overdue by 1 day", evidenceLinked: false, linkedDeletionTaskId: "DEL-22" },
-  { id: "RR-2026-016", type: "GRIEVANCE", requestor: "aadya@example.com", status: "NEW", sla: "7 days remaining", evidenceLinked: false, linkedDeletionTaskId: null },
+  { id: "RR-2026-013", type: "ACCESS",       requestor: "nita.shah@example.com",   status: "CLOSED",         sla: "Closed within window", evidenceLinked: true,  linkedDeletionTaskId: null },
+  { id: "RR-2026-014", type: "ACCESS",       requestor: "vikram.shenoy@example.com", status: "IN_PROGRESS", sla: "8 days remaining (30-day §13 window)", evidenceLinked: true, linkedDeletionTaskId: null },
+  { id: "RR-2026-015", type: "DELETION",     requestor: "rahul.m@example.com",     status: "IN_PROGRESS",    sla: "22 days remaining (45-day §14 window)", evidenceLinked: false, linkedDeletionTaskId: "DEL-22" },
+  { id: "RR-2026-016", type: "PORTABILITY",  requestor: "aadya@example.com",       status: "NEW",            sla: "29 days remaining (30-day §13 window)", evidenceLinked: false, linkedDeletionTaskId: null },
+  { id: "RR-2026-017", type: "GRIEVANCE",    requestor: "kiran.p@example.com",     status: "AWAITING_PROOF", sla: "12 days remaining (30-day §15 window)", evidenceLinked: false, linkedDeletionTaskId: null },
 ];
 
 const deletionTasks: DeletionTask[] = [
@@ -164,14 +193,45 @@ const deletionTasks: DeletionTask[] = [
   { id: "DEL-23", label: "Purge support export under retention schedule", system: "Freshdesk", dueDate: "2026-04-12", status: "AWAITING_PROCESSOR", proofLinked: false, processorAcknowledged: false },
 ];
 
+// §S1.10 / §A16 seed spec: "Sample Breach: Minor data exposure incident;
+// notification sent; remediated and closed." INC-402 is the live demo,
+// INC-401 satisfies the closed-historical exemplar.
 const incidents: Incident[] = [
-  { id: "INC-402", title: "Misrouted support export", status: "ASSESSMENT", severity: "CRITICAL", boardDeadline: "42h 15m remaining", remediationOwner: "Rohan Iyer", evidenceLinked: true },
+  {
+    id: "INC-401",
+    title: "Minor data exposure — staff training portal",
+    status: "CLOSED",
+    severity: "MEDIUM",
+    boardDeadline: "Closed within 72h window",
+    remediationOwner: "Rohan Iyer",
+    evidenceLinked: true,
+    affectedCount: 42,
+    discoveryDate: "2026-03-08T11:30:00.000Z",
+    autoEscalated: false,
+  },
+  {
+    id: "INC-402",
+    title: "Misrouted support export",
+    status: "ASSESSMENT",
+    severity: "CRITICAL",
+    boardDeadline: "42h 15m remaining",
+    remediationOwner: "Rohan Iyer",
+    evidenceLinked: true,
+    // 1,247 affected → auto-clamped to HIGH/CRITICAL by §S1.9.
+    affectedCount: 1_247,
+    discoveryDate: "2026-04-09T16:30:00.000Z",
+    autoEscalated: false,
+  },
 ];
 
+// §S1.10 / §A16 seed spec: "Sample Processor: Third-party SMS vendor — DPA
+// status: signed". proc-04 satisfies the literal spec line; the other
+// three exercise the full DPA/purge/sub-processor lifecycle.
 const processors: Processor[] = [
-  { id: "proc-01", name: "Zoho", service: "CRM and sales workflow", dpaStatus: "SIGNED", purgeAckStatus: "ACKNOWLEDGED", subProcessorCount: 2 },
-  { id: "proc-02", name: "Freshdesk", service: "Support ticketing", dpaStatus: "IN_REVIEW", purgeAckStatus: "PENDING", subProcessorCount: 1 },
-  { id: "proc-03", name: "Shiprocket", service: "Order fulfilment", dpaStatus: "MISSING", purgeAckStatus: "PENDING", subProcessorCount: 3 },
+  { id: "proc-01", name: "Zoho",        service: "CRM and sales workflow", dpaStatus: "SIGNED",    purgeAckStatus: "ACKNOWLEDGED", subProcessorCount: 2 },
+  { id: "proc-02", name: "Freshdesk",   service: "Support ticketing",      dpaStatus: "IN_REVIEW", purgeAckStatus: "PENDING",      subProcessorCount: 1 },
+  { id: "proc-03", name: "Shiprocket",  service: "Order fulfilment",       dpaStatus: "MISSING",   purgeAckStatus: "PENDING",      subProcessorCount: 3 },
+  { id: "proc-04", name: "MSG91",       service: "SMS gateway (OTPs + transactional)", dpaStatus: "SIGNED", purgeAckStatus: "ACKNOWLEDGED", subProcessorCount: 0 },
 ];
 
 const registerEntries: RegisterEntry[] = [
@@ -391,12 +451,30 @@ export function createTenantWorkspace(tenantObj: Tenant): TenantWorkspace {
 export function createSeedWorkspace(): TenantWorkspace {
   const workspace = createTenantWorkspace(tenant);
   workspace.team = team.filter((user) => user.tenantSlug === tenant.slug);
+  workspace.obligations = obligations;
+  workspace.sources = sources;
+  workspace.sourceProfiles = sourceProfiles;
+  workspace.registerEntries = registerEntries;
   workspace.notices = notices;
+  workspace.rightsCases = rightsCases;
+  workspace.deletionTasks = deletionTasks;
+  workspace.incidents = incidents;
   workspace.processors = processors;
-  workspace.incidents = [
-    { id: "INC-501", title: "Misrouted support export", status: "ASSESSMENT", severity: "CRITICAL", boardDeadline: "42h 15m remaining", remediationOwner: "Rohan Iyer", evidenceLinked: false },
-  ];
-  workspace.metrics.activeIncidents = 1;
+  workspace.evidence = evidence;
+  workspace.auditTrail = auditTrail.slice();
+  workspace.agentActions = agentActions.slice();
+  workspace.metrics = {
+    // §S1.10 / §A16 demo seed spec: readiness 67% (7 of 10 obligations
+    // with evidence). The doc's literal value; obligation seed above
+    // backs it (7 obligations with evidencePresent=true).
+    readinessScore: 67,
+    ownerCoverage: 83,
+    evidenceCoverage: 58,
+    openGaps: 4,
+    openRights: workspace.rightsCases.filter((c) => c.status !== "CLOSED").length,
+    overdueDeletions: workspace.deletionTasks.filter((t) => t.status !== "CLOSED" && t.dueDate < new Date().toISOString().slice(0, 10)).length,
+    activeIncidents: workspace.incidents.filter((i) => i.status !== "CLOSED").length,
+  };
   return workspace;
 }
 
