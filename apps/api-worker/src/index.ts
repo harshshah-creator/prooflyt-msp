@@ -146,6 +146,10 @@ type Env = {
   SAHAMATI_AA_BASE_URL?: string;
   SAHAMATI_FIU_ID?: string;
   SAHAMATI_AA_PUBLIC_KEY_SPKI_B64?: string;
+  // Demo + ops passwords — sourced from Worker secrets, never code.
+  // Set with: wrangler secret put DEMO_PASSWORD (and OPS_PASSWORD).
+  DEMO_PASSWORD?: string;
+  OPS_PASSWORD?: string;
 };
 
 /* ------------------------------------------------------------------ */
@@ -567,6 +571,7 @@ function handleAdminCreateTenant(
   state: AppState,
   body: { name: string; slug: string; industry: string; descriptor?: string },
   authHeader?: string,
+  defaultAdminPassword?: string,
 ) {
   const { user } = requireSession(state, authHeader);
   if (!user.internalAdmin) throw new HttpError(403, "Internal admin access required.");
@@ -596,12 +601,17 @@ function handleAdminCreateTenant(
   const workspace = createTenantWorkspace(newTenant);
   state.workspaces[slug] = workspace;
 
+  // Initial admin password: prefer the operator-supplied default
+  // (sourced from `DEMO_PASSWORD` env binding by the route handler), or
+  // generate a one-time random password the operator must rotate.
+  const initialPassword = defaultAdminPassword
+    ?? `tmp-${crypto.randomUUID().replace(/-/g, "").slice(0, 18)}`;
   const adminUser: User = {
     id: `user-admin-${slug}-${Date.now()}`,
     tenantSlug: slug,
     email: `admin@${slug}.com`,
     name: `${body.name.trim()} Admin`,
-    password: "ProoflytDemo!2026",
+    password: initialPassword,
     roles: ["TENANT_ADMIN", "COMPLIANCE_MANAGER"] as Role[],
     title: "Tenant Admin",
   };
@@ -609,7 +619,10 @@ function handleAdminCreateTenant(
   workspace.team.push(adminUser);
 
   syncMetrics(workspace);
-  return { ok: true, tenant: newTenant, adminEmail: adminUser.email };
+  // Return the initial password ONCE so the operator can hand it to the
+  // tenant admin out-of-band. It is never logged or stored elsewhere
+  // beyond the auth record itself.
+  return { ok: true, tenant: newTenant, adminEmail: adminUser.email, initialPassword };
 }
 
 function handleAdminDpdpLibrary(state: AppState, authHeader?: string) {
@@ -1984,11 +1997,23 @@ function handleAcknowledgeNotice(state: AppState, tenantSlug: string) {
 /*  Durable Object                                                     */
 /* ------------------------------------------------------------------ */
 
-export class ProoflytRuntime extends DurableObject {
+export class ProoflytRuntime extends DurableObject<Env> {
+  /**
+   *  Build the seed-password options object from the Worker's env
+   *  bindings. Centralised so `getState()` and any future seed-rebuild
+   *  pathway stay in sync.
+   */
+  private seedOptions() {
+    return {
+      demoPassword: this.env.DEMO_PASSWORD,
+      opsPassword: this.env.OPS_PASSWORD,
+    };
+  }
+
   async getState() {
     let state = await this.ctx.storage.get<AppState>("state");
     if (!state) {
-      state = createSeedState();
+      state = createSeedState(this.seedOptions());
       await this.ctx.storage.put("state", state);
     }
     return state;
@@ -1996,6 +2021,17 @@ export class ProoflytRuntime extends DurableObject {
 
   async putState(state: AppState) {
     await this.ctx.storage.put("state", state);
+  }
+
+  /**
+   *  Rebuild the seed state with the current env-driven passwords.
+   *  Used by `POST /api/admin/reset` so password rotations take effect
+   *  without a redeploy.
+   */
+  async resetState() {
+    const fresh = createSeedState(this.seedOptions());
+    await this.ctx.storage.put("state", fresh);
+    return fresh;
   }
 }
 
@@ -2134,8 +2170,9 @@ export default {
       if (request.method === "POST" && pathname === "/api/admin/reset") {
         const id = env.PROOFLYT_RUNTIME.idFromName("default");
         const stub = env.PROOFLYT_RUNTIME.get(id);
-        const fresh = createSeedState();
-        await stub.putState(fresh);
+        // Rebuild seed inside the DO so it picks up the current env
+        // bindings for DEMO_PASSWORD / OPS_PASSWORD.
+        await stub.resetState();
         return json({ ok: true, message: "State reset to fresh seed." });
       }
 
@@ -2177,7 +2214,7 @@ export default {
       }
       if (request.method === "POST" && pathname === "/api/admin/tenants") {
         const body = await parseBody<{ name: string; slug: string; industry: string; descriptor?: string }>(request);
-        return json(await withState(env, (s) => handleAdminCreateTenant(s, body, auth)), 201);
+        return json(await withState(env, (s) => handleAdminCreateTenant(s, body, auth, env.DEMO_PASSWORD)), 201);
       }
       if (request.method === "GET" && pathname === "/api/admin/dpdp-library") {
         return json(await withState(env, (s) => handleAdminDpdpLibrary(s, auth)));

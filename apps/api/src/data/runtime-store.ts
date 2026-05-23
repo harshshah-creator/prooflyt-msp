@@ -24,7 +24,11 @@ export class RuntimeStore {
     ensureDir(this.evidencePath);
 
     if (!existsSync(this.statePath)) {
-      this.state = createSeedState();
+      // Demo passwords come from env; never hardcoded.
+      this.state = createSeedState({
+        demoPassword: process.env.DEMO_PASSWORD,
+        opsPassword: process.env.OPS_PASSWORD,
+      });
       this.save(this.state);
       return;
     }
