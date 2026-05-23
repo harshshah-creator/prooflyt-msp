@@ -98,8 +98,17 @@ function main() {
   const health = curlJson("/health");
   ensure(health.ok === true, "health check did not return ok");
 
-  const tenantToken = login("arjun@bombaygrooming.com", "ProoflytDemo!2026");
-  const adminToken = login("ops@prooflyt.com", "ProoflytOps!2026");
+  // Demo passwords come from env so the smoke test can be wired into
+  // any deployment without leaking values in source. See SECURITY.md.
+  const demoPassword = process.env.DEMO_PASSWORD;
+  const opsPassword = process.env.OPS_PASSWORD;
+  if (!demoPassword || !opsPassword) {
+    throw new Error(
+      "Set DEMO_PASSWORD and OPS_PASSWORD env vars before running the smoke test. See ../docs/admin-guide.md or credentials.md.",
+    );
+  }
+  const tenantToken = login("arjun@bombaygrooming.com", demoPassword);
+  const adminToken = login("ops@prooflyt.com", opsPassword);
 
   const adminBootstrap = curlJson("/admin/bootstrap", {
     headers: { Authorization: `Bearer ${adminToken}` },
