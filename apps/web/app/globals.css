@@ -1393,3 +1393,92 @@ button, input, textarea, select { font: inherit; color: inherit; }
   padding: 0.6rem; border-radius: var(--r-sm); background: rgba(0,0,0,0.04);
   margin-top: 0.4rem;
 }
+
+/* ── Regulatory Calendar (§S2.3) ─────────────────────────────────── */
+.regulatory-calendar { /* container shares .admin-panel.worksheet styling */ }
+.reg-cal-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.55rem; }
+.reg-cal-item {
+  display: grid; grid-template-columns: 9rem 1fr; gap: 1rem;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: 0.65rem 0.85rem; background: var(--surface-1);
+  border-left-width: 4px;
+}
+.reg-cal-item.is-past     { border-left-color: var(--ink-4);   opacity: 0.7; }
+.reg-cal-item.is-imminent { border-left-color: var(--danger); }
+.reg-cal-item.is-soon     { border-left-color: var(--warning); }
+.reg-cal-item.is-future   { border-left-color: var(--accent); }
+.reg-cal-date { display: grid; gap: 0.15rem; }
+.reg-cal-date strong { font-size: 0.95rem; color: var(--ink); }
+.reg-cal-date span   { font-size: 0.7rem;  color: var(--ink-4); }
+.reg-cal-label    { font-size: 0.9rem;  font-weight: 600; color: var(--ink); }
+.reg-cal-citation { font-size: 0.74rem; color: var(--ink-3); margin-top: 0.15rem; }
+.reg-cal-note     { font-size: 0.78rem; color: var(--ink-2); margin: 0.35rem 0 0; line-height: 1.45; }
+
+/* ── LLM residency panel (§S2.3) ─────────────────────────────────── */
+.llm-mode-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.55rem; }
+.llm-mode-row {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: 0.65rem 0.85rem; background: var(--surface-1);
+}
+.llm-mode-row.is-active { border-color: var(--accent); background: var(--accent-soft); }
+.llm-mode-head { display: flex; align-items: center; gap: 0.5rem; }
+.llm-mode-head strong { font-size: 0.92rem; color: var(--ink); }
+.llm-mode-pill {
+  padding: 0.1rem 0.5rem; border-radius: 999px;
+  background: var(--accent); color: white;
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+}
+.llm-mode-row p { font-size: 0.8rem; color: var(--ink-2); margin: 0.3rem 0 0; line-height: 1.5; }
+.llm-mode-row code { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.78rem; }
+.llm-mode-meta { font-size: 0.74rem; color: var(--ink-3); margin-top: 0.4rem; }
+.llm-mode-footer { font-size: 0.76rem; color: var(--ink-4); margin-top: 0.8rem; }
+
+/* Dashboard placement for Regulatory Calendar */
+.dash-regulatory-calendar { grid-column: 1 / -1; margin-top: 0.5rem; }
+
+/* ── Notice block picker (§S1.4 Module 5) ────────────────────────── */
+.notice-block-picker {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface-1); padding: 0.65rem 0.85rem;
+  margin-top: 0.55rem;
+}
+.notice-block-picker > summary { cursor: pointer; font-weight: 600; font-size: 0.85rem; color: var(--ink); }
+.notice-block-help { font-size: 0.78rem; color: var(--ink-3); margin: 0.45rem 0 0.55rem; line-height: 1.5; }
+.notice-block-form { display: grid; gap: 0.5rem; }
+.notice-block-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.3rem; }
+.notice-block-row { padding: 0.35rem 0.5rem; border-radius: 6px; }
+.notice-block-row:hover { background: rgba(0,0,0,0.025); }
+.notice-block-row label { display: flex; align-items: center; gap: 0.6rem; cursor: pointer; }
+.notice-block-label { flex: 1; display: flex; align-items: center; gap: 0.5rem; }
+.notice-block-label strong { font-size: 0.85rem; color: var(--ink); }
+.notice-block-mandatory {
+  padding: 0.06rem 0.4rem; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent);
+  font-size: 0.62rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+}
+.notice-block-citation { font-size: 0.72rem; color: var(--ink-4); white-space: nowrap; }
+
+/* ── Named reports panel (§A7.10) ─────────────────────────────── */
+.report-list { display: grid; gap: 0.6rem; max-width: 760px; margin-top: 0.6rem; }
+.report-card {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: 0.55rem 0.85rem; background: var(--surface-1);
+}
+.report-card summary {
+  cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; font-weight: 600; font-size: 0.9rem; color: var(--ink);
+}
+.report-card summary strong { font-size: 0.92rem; }
+.report-card .report-citation { font-size: 0.72rem; color: var(--ink-4); font-weight: 500; }
+.report-card p { font-size: 0.78rem; color: var(--ink-3); margin: 0.45rem 0 0; line-height: 1.45; }
+.report-format-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.55rem; }
+.report-format-pill {
+  font-size: 0.7rem; padding: 0.28rem 0.5rem; border-radius: var(--r-sm);
+  background: rgba(0,0,0,0.05); color: var(--ink-2);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.report-card pre {
+  font-size: 0.7rem; padding: 0.6rem; border-radius: var(--r-sm);
+  background: rgba(0,0,0,0.06); overflow-x: auto; margin-top: 0.5rem;
+  color: var(--ink-2); font-family: ui-monospace, SFMono-Regular, monospace;
+}

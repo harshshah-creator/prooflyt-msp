@@ -28,8 +28,12 @@ import { AnomalyPanel } from "./admin/anomaly-panel";
 import { SiemKeysPanel } from "./admin/siem-keys-panel";
 import { WebhooksPanel } from "./admin/webhooks-panel";
 import { CompliancePackExport } from "./admin/compliance-pack-export";
+import { NamedReportsPanel } from "./admin/named-reports-panel";
 import { NoticeRule3Trigger } from "./admin/notice-rule3-button";
+import { NoticeBlockPicker } from "./admin/notice-block-picker";
 import { DpiaPanel } from "./admin/dpia-panel";
+import { LlmResidencyPanel } from "./admin/llm-residency-panel";
+import { RegulatoryCalendar } from "./admin/regulatory-calendar";
 
 function lifecycleToPill(lifecycle: string) {
   switch (lifecycle) {
@@ -179,6 +183,11 @@ export function DashboardView({ data }: { data: WorkspaceResponse }) {
           })}
         </div>
       </div>
+
+      {/* ── Regulatory Calendar (§S2.3 should-pass) ─────────────────── */}
+      <div className="dash-regulatory-calendar">
+        <RegulatoryCalendar />
+      </div>
     </div>
   );
 }
@@ -256,6 +265,8 @@ export interface AdminPanelData {
     recommendations: string[]; markdownReport?: string;
   }> };
   bearerHint?: string;
+  // setup — §S2.3 self-hosted LLM toggle
+  llmResidency?: { mode: "MANAGED" | "SELF_HOSTED" | "AIR_GAPPED"; endpoint?: string };
 }
 
 export interface ModuleViewFlash {
@@ -486,10 +497,11 @@ export function ModuleView({
               </form>
               <form action={updateNoticeContentAction.bind(null, workspace.tenant.slug, notice.id)} className="narrative-block">
                 <input name="title" defaultValue={notice.title} />
-                <textarea name="content" defaultValue={notice.content} rows={4} />
+                <textarea name="content" defaultValue={notice.content} rows={8} />
                 <input name="audience" defaultValue={notice.audience} />
                 <button type="submit" className="text-button">Save</button>
               </form>
+              <NoticeBlockPicker tenantSlug={workspace.tenant.slug} noticeId={notice.id} />
               <NoticeRule3Trigger
                 tenantSlug={workspace.tenant.slug}
                 noticeId={notice.id}
@@ -933,6 +945,10 @@ export function ModuleView({
 
       {moduleId === "setup" && (
         <section className="worksheet">
+          <LlmResidencyPanel
+            currentMode={adminData?.llmResidency?.mode ?? "MANAGED"}
+            selfHostedEndpoint={adminData?.llmResidency?.endpoint}
+          />
           {adminData?.siemKeys && (
             <SiemKeysPanel
               tenantSlug={workspace.tenant.slug}
@@ -1101,6 +1117,13 @@ export function ModuleView({
 
       {moduleId === "reports" && (
         <section className="worksheet">
+          {adminData?.apiBase && (
+            <NamedReportsPanel
+              tenantSlug={workspace.tenant.slug}
+              apiBase={adminData.apiBase}
+              bearerHint={adminData.bearerHint ?? "<your-session-token>"}
+            />
+          )}
           {adminData?.firms && adminData.apiBase && (
             <CompliancePackExport
               tenantSlug={workspace.tenant.slug}

@@ -67,10 +67,11 @@ export interface Messages {
   rightsLabelMessage: string;
   rightsPlaceholderMessage: string;
   rightsSubmit: string;
-  /* type options */
+  /* type options — per JVA Schedule 1 §S1.4 Module 6 (6 right types) */
   typeAccess: string;
   typeCorrection: string;
   typeDeletion: string;
+  typePortability: string;
   typeGrievance: string;
   typeWithdrawal: string;
   /* legal references */
@@ -110,6 +111,7 @@ const en: Messages = {
   typeAccess: "Access (§13)",
   typeCorrection: "Correction (§14)",
   typeDeletion: "Deletion (§14)",
+  typePortability: "Portability (§13 — machine-readable copy)",
   typeGrievance: "Grievance (§15)",
   typeWithdrawal: "Consent withdrawal (§6)",
   legalNoticeFooter: "Notice published under the Digital Personal Data Protection Act, 2023, §5 read with Rule 3.",
@@ -143,6 +145,7 @@ const hi: Messages = {
   typeAccess: "अभिगम (§13)",
   typeCorrection: "सुधार (§14)",
   typeDeletion: "विलोपन (§14)",
+  typePortability: "पोर्टेबिलिटी (§13 — मशीन-पठनीय प्रति)",
   typeGrievance: "शिकायत (§15)",
   typeWithdrawal: "सहमति वापसी (§6)",
   legalNoticeFooter: "यह सूचना डिजिटल व्यक्तिगत डेटा सुरक्षा अधिनियम, 2023, §5 और नियम 3 के तहत प्रकाशित की गई है।",
@@ -176,6 +179,7 @@ const ta: Messages = {
   typeAccess: "அணுகல் (§13)",
   typeCorrection: "திருத்தம் (§14)",
   typeDeletion: "நீக்கம் (§14)",
+  typePortability: "இடம்பெயர்வு (§13 — இயந்திரத்தால் படிக்கக்கூடிய நகல்)",
   typeGrievance: "புகார் (§15)",
   typeWithdrawal: "ஒப்புதல் திரும்பப் பெறுதல் (§6)",
   legalNoticeFooter: "டிஜிட்டல் தனிநபர் தரவு பாதுகாப்புச் சட்டம், 2023, §5 மற்றும் விதி 3-ன் கீழ் வெளியிடப்பட்ட அறிவிப்பு.",

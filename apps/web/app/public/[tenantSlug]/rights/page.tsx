@@ -70,6 +70,7 @@ export default async function PublicRightsPage({
               <option value="ACCESS">{t.typeAccess}</option>
               <option value="CORRECTION">{t.typeCorrection}</option>
               <option value="DELETION">{t.typeDeletion}</option>
+              <option value="PORTABILITY">{t.typePortability}</option>
               <option value="GRIEVANCE">{t.typeGrievance}</option>
               <option value="WITHDRAWAL">{t.typeWithdrawal}</option>
             </select>

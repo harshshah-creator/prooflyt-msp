@@ -138,6 +138,47 @@ export async function analyzeNoticeAction(tenantSlug: string, noticeId: string) 
 }
 
 /* ------------------------------------------------------------------ */
+/*  Notice template-block composer (§S1.4 Module 5 / §A7.4)             */
+/* ------------------------------------------------------------------ */
+
+import { NOTICE_BLOCK_TEMPLATES } from "../../components/admin/notice-block-templates";
+
+export async function applyNoticeBlocksAction(
+  tenantSlug: string,
+  noticeId: string,
+  formData: FormData,
+) {
+  const ids = formData.getAll("blocks").map((v) => String(v));
+  if (ids.length === 0) {
+    redirect(`/workspace/${tenantSlug}/notices?ruleErr=Pick%20at%20least%20one%20block`);
+  }
+  const appendix = NOTICE_BLOCK_TEMPLATES
+    .filter((b) => ids.includes(b.id))
+    .map((b) => `## ${b.label}\n_${b.citation}_\n\n${b.defaultBody}`)
+    .join("\n\n---\n\n");
+  // We post the appendix as an UPDATE to the notice content via the
+  // existing worker endpoint. The worker stores it verbatim and bumps
+  // the version. Operator can then edit the body in-place to swap
+  // placeholders ([REPLACE — …]) for tenant-specific values.
+  const current = await authedFetch(`/portal/${tenantSlug}/bootstrap`).then((r) =>
+    r.ok ? r.json() : null,
+  );
+  const existingContent: string =
+    current?.workspace?.notices?.find?.((n: { id: string; content: string }) => n.id === noticeId)
+      ?.content ?? "";
+  const merged = existingContent ? `${existingContent}\n\n---\n\n${appendix}` : appendix;
+  const res = await authedFetch(`/portal/${tenantSlug}/notices/${noticeId}/update`, {
+    method: "POST",
+    body: JSON.stringify({ content: merged }),
+  });
+  if (!res.ok) {
+    redirect(`/workspace/${tenantSlug}/notices?ruleErr=Block%20append%20failed`);
+  }
+  revalidatePath(`/workspace/${tenantSlug}/notices`);
+  redirect(`/workspace/${tenantSlug}/notices?blocksAdded=${ids.length}`);
+}
+
+/* ------------------------------------------------------------------ */
 /*  DPIA                                                                */
 /* ------------------------------------------------------------------ */
 
