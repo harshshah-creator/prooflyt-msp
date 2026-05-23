@@ -78,15 +78,24 @@ Smart Mapping is implemented with a provider layer:
 
 ## Demo Credentials
 
-- Tenant admin:
-  - email: `arjun@bombaygrooming.com`
-  - password: `ProoflytDemo!2026`
-- Auditor:
-  - email: `audit@bombaygrooming.com`
-  - password: `ProoflytDemo!2026`
-- Internal admin:
-  - email: `ops@prooflyt.com`
-  - password: `ProoflytOps!2026`
+Demo passwords are sourced from runtime env bindings, not source code.
+Set them as Cloudflare Workers secrets and / or Vercel env vars:
+
+```bash
+wrangler secret put DEMO_PASSWORD --name prooflyt-msp-api
+wrangler secret put OPS_PASSWORD  --name prooflyt-msp-api
+vercel env add DEMO_PASSWORD production
+vercel env add OPS_PASSWORD  production
+```
+
+Then log in with:
+
+- Tenant admin: `arjun@bombaygrooming.com` / `$DEMO_PASSWORD`
+- Auditor: `audit@bombaygrooming.com` / `$DEMO_PASSWORD`
+- Internal admin: `ops@prooflyt.com` / `$OPS_PASSWORD`
+
+The live demo login page also displays the currently-set values, sourced
+from the same env vars. See `SECURITY.md` for credential handling rules.
 
 ## Run
 
