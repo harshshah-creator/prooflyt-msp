@@ -155,3 +155,19 @@ export function SectionHead({ title, sub, cite, right }: { title: ReactNode; sub
     </div>
   );
 }
+
+/* ---- Stat (used in module stat-strips) ---- */
+export function Stat({ label, value, sub, tone }: { label: ReactNode; value: ReactNode; sub?: ReactNode; tone?: "good" | "warn" | "bad" }) {
+  return (
+    <div className="pf-stat">
+      <span className="pf-stat-label">{label}</span>
+      <span className={`pf-stat-val serif tnum${tone ? " is-" + tone : ""}`}>{value}</span>
+      {sub && <span className="pf-stat-sub">{sub}</span>}
+    </div>
+  );
+}
+
+/* ---- Severity tag (breaches/processors) ---- */
+export function SevTag({ level }: { level: string }) {
+  return <span className={`pf-sev-tag pf-sev-${level.toLowerCase()}`}>{level.toLowerCase()}</span>;
+}

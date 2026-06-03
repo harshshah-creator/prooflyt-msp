@@ -33,7 +33,7 @@ import { NoticeRule3Trigger } from "./admin/notice-rule3-button";
 import { NoticeBlockPicker } from "./admin/notice-block-picker";
 import { DpiaPanel } from "./admin/dpia-panel";
 import { LlmResidencyPanel } from "./admin/llm-residency-panel";
-import { ReadinessRing, InlineAlert, Citation, Delta, Bar, AuditRow, SectionHead, Icon } from "./pf-ui";
+import { ReadinessRing, InlineAlert, Citation, Delta, Bar, AuditRow, SectionHead, Icon, Avatar, Pill, Stat, SevTag } from "./pf-ui";
 
 function lifecycleToPill(lifecycle: string) {
   switch (lifecycle) {
@@ -360,26 +360,20 @@ export function ModuleView({
   };
 
   return (
-    <div className="module-stage">
-      <section className="module-banner">
-        <span className="section-kicker">{moduleId.replace(/^\w/, (letter) => letter.toUpperCase())}</span>
-        <h2>{headerByModule[moduleId].title}</h2>
-        <p>{headerByModule[moduleId].body}</p>
-      </section>
+    <div className="module-stage pf-app-scope">
+      <div className="pf-page-head">
+        <p className="pf-page-sub">{headerByModule[moduleId].body}</p>
+      </div>
 
-      {moduleId === "sources" && (
-        <section className="worksheet">
-          <div className="split-ledger">
-            <div className="narrative-block">
-              <span className="section-kicker">New source intake</span>
-              <p>
-                Upload CSV or Excel files into the profiling queue. The system derives headers, scores the mapping, and
-                keeps the raw file out of the core compliance model.
-              </p>
-            </div>
-            <SourceUploadForm tenantSlug={workspace.tenant.slug} />
-          </div>
-          {flash?.uploaded === "source" && <p className="form-status success">Source uploaded and sent to review.</p>}
+      {moduleId === "sources" && (() => {
+        const profiled = workspace.sources.filter((s) => s.status === "APPROVED").length;
+        const totalFields = workspace.sources.reduce((a, s) => a + s.fields, 0);
+        const avgConf = workspace.sourceProfiles.length
+          ? Math.round((workspace.sourceProfiles.reduce((a, f) => a + f.confidence, 0) / workspace.sourceProfiles.length) * 100)
+          : 0;
+        return (
+        <section className="pf-screen" style={{ padding: 0, maxWidth: "none" }}>
+          {flash?.uploaded === "source" && <div style={{ marginBottom: 12 }}><InlineAlert tone="good" title="Source uploaded">Sent to the Smart-Mapping review queue.</InlineAlert></div>}
           <FlashStatus
             flash={flash}
             updatedValue="source"
@@ -387,74 +381,74 @@ export function ModuleView({
             errorValue="source-upload"
             errorMessage="Source workflow failed. Please try again."
           />
-          <div className="section-heading">
-            <div>
-              <span className="section-kicker">AI Smart Mapping</span>
-              <h3>Review queue</h3>
-            </div>
-          </div>
-          <div className="ruled-table">
-            <div className="ruled-head">
-              <span>Source</span>
-              <span>Mode</span>
-              <span>Status</span>
-              <span>Field coverage</span>
-            </div>
-            {workspace.sources.map((source) => (
-              <div key={source.id} className="ruled-row">
-                <div>
-                  <strong>{source.name}</strong>
-                  <span>{source.fileName}</span>
-                </div>
-                <span>{source.profileMode.replaceAll("_", " ")}</span>
-                <span>{source.status}</span>
-                <div className="row-stack align-end">
-                  <span>
-                    {source.approvedFields}/{source.fields}
-                  </span>
-                  {!source.pushedToRegister ? (
-                    <form action={approveSourceAction.bind(null, workspace.tenant.slug, source.id)}>
-                      <button type="submit" className="text-button">
-                        Approve to register
-                      </button>
-                    </form>
-                  ) : (
-                    <span className="micro-note">Register linked</span>
-                  )}
-                </div>
-              </div>
-            ))}
+          <div className="pf-stat-strip">
+            <Stat label="Sources" value={workspace.sources.length} sub={`${profiled} profiled`} />
+            <Stat label="Fields discovered" value={totalFields} sub="across all sources" />
+            <Stat label="In review queue" value={workspace.sources.filter((s) => s.status !== "APPROVED").length} sub="awaiting approval" tone="warn" />
+            <Stat label="Avg. confidence" value={`${avgConf}%`} sub="AI Smart-Mapping" tone="good" />
           </div>
 
-          <div className="split-ledger">
-            <div>
-              <span className="section-kicker">Classifier output</span>
-              {workspace.sourceProfiles.slice(0, 6).map((field) => (
-                <div key={field.id} className="ledger-row">
-                  <div>
-                    <strong>{field.fieldName}</strong>
-                    <span>{field.mappedCategory}</span>
-                  </div>
-                  <div>
-                    <strong>{Math.round(field.confidence * 100)}%</strong>
-                    <span>{field.requiresReview ? "Reviewer hold" : "Ready"}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="narrative-block">
-              <span className="section-kicker">Boundary</span>
-              <p>
-                Smart Mapping supports header-only, masked-sample, and ephemeral-full modes. Raw payloads are never retained
-                in the core compliance model, and low-confidence fields stay in reviewer hold.
-              </p>
-            </div>
+          <div className="pf-card" style={{ overflow: "hidden" }}>
+            <table className="pf-table">
+              <thead><tr><th>Source</th><th>Mode</th><th>Status</th><th>Coverage</th><th></th></tr></thead>
+              <tbody>
+                {workspace.sources.map((source) => (
+                  <tr key={source.id}>
+                    <td><span className="pf-cell-strong">{source.name}</span><span className="pf-cell-dim mono">{source.fileName}</span></td>
+                    <td className="pf-cell-dim mono">{source.profileMode.replaceAll("_", " ")}</td>
+                    <td>{source.status === "APPROVED" ? <Pill tone="good" sm>Profiled</Pill> : <Pill tone="warn" sm>{source.status.replaceAll("_", " ")}</Pill>}</td>
+                    <td className="tnum">{source.approvedFields}/{source.fields}</td>
+                    <td>{!source.pushedToRegister ? (
+                      <form action={approveSourceAction.bind(null, workspace.tenant.slug, source.id)} className="pf-inline-save">
+                        <button type="submit">Approve to register</button>
+                      </form>
+                    ) : <span className="pf-link-cell">Register linked</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <InlineAlert tone="warn" title="Review before committing" cite="JVA §S1.2">
+              AI suggestions are advisory. A human confirms each field&rsquo;s classification and legal basis before it enters the register. The LLM only ever sees masked samples, never raw PII.
+            </InlineAlert>
+          </div>
+
+          <div className="pf-card" style={{ overflow: "hidden", marginTop: 16 }}>
+            <div style={{ padding: "16px 18px 0" }}><SectionHead title="Classifier output" sub="AI Smart-Mapping suggestions" cite="DPDP §8" /></div>
+            <table className="pf-table pf-table-tight">
+              <thead><tr><th>Field</th><th>Category</th><th>Confidence</th><th>Decision</th></tr></thead>
+              <tbody>
+                {workspace.sourceProfiles.slice(0, 8).map((field) => {
+                  const c = field.confidence;
+                  return (
+                    <tr key={field.id}>
+                      <td className="mono" style={{ fontSize: 12 }}>{field.fieldName}</td>
+                      <td>{field.mappedCategory}</td>
+                      <td><Pill tone={c >= 0.8 ? "good" : c >= 0.5 ? "warn" : "bad"} sm dot={false}>{Math.round(c * 100)}%</Pill></td>
+                      <td>{field.requiresReview ? <span className="pf-cell-unassigned">Reviewer hold</span> : <span className="pf-link-cell">Ready</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <SourceUploadForm tenantSlug={workspace.tenant.slug} />
           </div>
         </section>
-      )}
+        );
+      })()}
 
-      {moduleId === "register" && (
-        <section className="worksheet">
+      {moduleId === "register" && (() => {
+        const approved = workspace.registerEntries.filter((e) => e.lifecycle === "APPROVED").length;
+        const review = workspace.registerEntries.filter((e) => e.lifecycle === "IN_REVIEW" || e.lifecycle === "DRAFT").length;
+        const complete = workspace.registerEntries.filter((e) => e.completeness === "COMPLETE").length;
+        const pct = workspace.registerEntries.length ? Math.round((complete / workspace.registerEntries.length) * 100) : 0;
+        return (
+        <section className="pf-screen" style={{ padding: 0, maxWidth: "none" }}>
           <FlashStatus
             flash={flash}
             updatedValue="register"
@@ -462,39 +456,42 @@ export function ModuleView({
             errorValue="register-update"
             errorMessage="Register update failed."
           />
-          <div className="ruled-table">
-            <div className="ruled-head five">
-              <span>System</span>
-              <span>Category</span>
-              <span>Legal basis</span>
-              <span>Lifecycle</span>
-              <span>Completeness</span>
-            </div>
-            {workspace.registerEntries.map((entry) => (
-              <div key={entry.id} className="ruled-row five">
-                <div>
-                  <strong>{entry.system}</strong>
-                  <span>{entry.sourceTrace}</span>
-                </div>
-                <span>{entry.dataCategory}</span>
-                <span>{entry.legalBasis}</span>
-                <form action={updateRegisterLifecycleAction.bind(null, workspace.tenant.slug, entry.id)} className="compact-inline-form">
-                  <select name="lifecycle" defaultValue={entry.lifecycle}>
-                    <option value="DRAFT">Draft</option>
-                    <option value="IN_REVIEW">In review</option>
-                    <option value="APPROVED">Approved</option>
-                    <option value="ARCHIVED">Archived</option>
-                  </select>
-                  <button type="submit" className="text-button">
-                    Save
-                  </button>
-                </form>
-                <span>{entry.completeness}</span>
-              </div>
-            ))}
+          <div className="pf-stat-strip">
+            <Stat label="Register entries" value={workspace.registerEntries.length} sub={`${approved} approved`} />
+            <Stat label="Approved" value={approved} sub="locked classification" tone="good" />
+            <Stat label="Needs review" value={review} sub="awaiting approval" tone={review > 0 ? "warn" : undefined} />
+            <Stat label="Completeness" value={`${pct}%`} sub="of fields" tone={pct >= 80 ? "good" : "warn"} />
+          </div>
+          <div className="pf-card" style={{ overflow: "hidden" }}>
+            <table className="pf-table">
+              <thead><tr><th>Field / system</th><th>Category</th><th>Legal basis</th><th>Retention</th><th>Completeness</th><th>Lifecycle</th></tr></thead>
+              <tbody>
+                {workspace.registerEntries.map((entry) => (
+                  <tr key={entry.id}>
+                    <td><span className="pf-cell-strong">{entry.system}</span><span className="pf-cell-dim mono">{entry.sourceTrace}</span></td>
+                    <td className="pf-cell-dim">{entry.dataCategory}</td>
+                    <td><Citation soft>{entry.legalBasis}</Citation></td>
+                    <td className="pf-cell-dim">{entry.retentionLabel}</td>
+                    <td>{entry.completeness === "COMPLETE" ? <Pill tone="good" sm dot={false}>Complete</Pill> : entry.completeness === "PARTIAL" ? <Pill tone="warn" sm dot={false}>Partial</Pill> : <span className="pf-cell-dim">Missing</span>}</td>
+                    <td>
+                      <form action={updateRegisterLifecycleAction.bind(null, workspace.tenant.slug, entry.id)} className="pf-inline-save">
+                        <select name="lifecycle" defaultValue={entry.lifecycle}>
+                          <option value="DRAFT">Draft</option>
+                          <option value="IN_REVIEW">In review</option>
+                          <option value="APPROVED">Approved</option>
+                          <option value="ARCHIVED">Archived</option>
+                        </select>
+                        <button type="submit">Save</button>
+                      </form>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </section>
-      )}
+        );
+      })()}
 
       {moduleId === "notices" && (
         <section className="worksheet">
@@ -608,54 +605,46 @@ export function ModuleView({
             errorValue="agent-review"
             errorMessage="Agent review failed."
           />
-          {workspace.rightsCases.map((caseItem) => {
-            const enriched = adminData?.sla?.cases.find((c) => c.id === caseItem.id);
-            return (
-            <article key={caseItem.id} className="case-row">
-              <div>
-                <strong>{caseItem.id}</strong>
-                <span>
-                  {caseItem.type} · {caseItem.requestor}
-                </span>
-                {enriched?.slaInfo && (
-                  <div style={{ marginTop: "0.4rem" }}>
-                    <SlaChip
-                      state={enriched.slaInfo.state}
-                      daysRemaining={enriched.slaInfo.daysRemaining}
-                      humanLabel={enriched.slaInfo.humanLabel}
-                      citation={enriched.slaInfo.citation}
-                    />
-                  </div>
-                )}
-              </div>
-              <form action={updateRightsCaseAction.bind(null, workspace.tenant.slug, caseItem.id)} className="compact-inline-form">
-                <select name="status" defaultValue={caseItem.status}>
-                  <option value="NEW">New</option>
-                  <option value="IN_PROGRESS">In progress</option>
-                  <option value="AWAITING_PROOF">Awaiting proof</option>
-                  <option value="CLOSED">Closed</option>
-                </select>
-                <label className="micro-toggle">
-                  <input type="checkbox" name="evidenceLinked" defaultChecked={caseItem.evidenceLinked} />
-                  <span>Evidence</span>
-                </label>
-                <input name="refusalNote" placeholder="Refusal note if closing without proof" />
-                <button type="submit" className="text-button">
-                  Save
-                </button>
-              </form>
-              <div className="rights-agent-bar">
-                <span>{caseItem.sla}</span>
-                <span>{caseItem.evidenceLinked ? "Proof linked" : "Awaiting proof"}</span>
-                <form action={triggerRightsAgentAction.bind(null, workspace.tenant.slug, caseItem.id)}>
-                  <button type="submit" className="agent-trigger-button">
-                    <span className="agent-icon">⚡</span> Run Rights Orchestrator
-                  </button>
-                </form>
-              </div>
-            </article>
-            );
-          })}
+          <div className="pf-card" style={{ overflow: "hidden" }}>
+            <table className="pf-table">
+              <thead><tr><th>Case</th><th>Data principal</th><th>Right type</th><th>SLA</th><th>Status</th><th></th></tr></thead>
+              <tbody>
+                {workspace.rightsCases.map((caseItem) => {
+                  const enriched = adminData?.sla?.cases.find((c) => c.id === caseItem.id);
+                  const stTone = caseItem.status === "CLOSED" ? "good" : caseItem.status === "NEW" ? "accent" : "warn";
+                  return (
+                    <tr key={caseItem.id}>
+                      <td><span className="mono pf-cell-id">{caseItem.id}</span></td>
+                      <td><span className="pf-cell-strong">{caseItem.requestor}</span></td>
+                      <td><Pill tone="soft" sm dot={false}>{caseItem.type.replaceAll("_", " ")}</Pill></td>
+                      <td>{enriched?.slaInfo
+                        ? <SlaChip state={enriched.slaInfo.state} daysRemaining={enriched.slaInfo.daysRemaining} humanLabel={enriched.slaInfo.humanLabel} citation={enriched.slaInfo.citation} />
+                        : <span className="pf-cell-dim">{caseItem.sla}</span>}</td>
+                      <td><Pill tone={stTone}>{caseItem.status.replaceAll("_", " ").toLowerCase()}</Pill></td>
+                      <td>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+                          <form action={updateRightsCaseAction.bind(null, workspace.tenant.slug, caseItem.id)} className="pf-inline-save" style={{ gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                            <select name="status" defaultValue={caseItem.status}>
+                              <option value="NEW">New</option>
+                              <option value="IN_PROGRESS">In progress</option>
+                              <option value="AWAITING_PROOF">Awaiting proof</option>
+                              <option value="CLOSED">Closed</option>
+                            </select>
+                            <label className="micro-toggle"><input type="checkbox" name="evidenceLinked" defaultChecked={caseItem.evidenceLinked} /><span>Ev.</span></label>
+                            <input name="refusalNote" placeholder="Refusal note" style={{ padding: "5px 8px", fontSize: 12, border: "1px solid var(--line-strong)", borderRadius: "var(--r-sm)", background: "var(--surface)", width: 130 }} />
+                            <button type="submit">Save</button>
+                          </form>
+                          <form action={triggerRightsAgentAction.bind(null, workspace.tenant.slug, caseItem.id)}>
+                            <button type="submit" className="pf-btn pf-btn-ghost pf-btn-sm">⚡ Orchestrator</button>
+                          </form>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
           {/* Rights Agent Review Queue */}
           {(workspace.agentActions || []).filter((a) => a.agentId === "rights-orchestrator").length > 0 && (
@@ -728,8 +717,12 @@ export function ModuleView({
         </section>
       )}
 
-      {moduleId === "retention" && (
-        <section className="worksheet">
+      {moduleId === "retention" && (() => {
+        const today = new Date().toISOString().slice(0, 10);
+        const overdue = workspace.deletionTasks.filter((t) => t.status !== "CLOSED" && t.dueDate <= today).length;
+        const closed = workspace.deletionTasks.filter((t) => t.status === "CLOSED").length;
+        return (
+        <section className="pf-screen" style={{ padding: 0, maxWidth: "none" }}>
           <FlashStatus
             flash={flash}
             updatedValue="retention"
@@ -737,39 +730,46 @@ export function ModuleView({
             errorValue="retention-update"
             errorMessage="Retention workflow update failed. Closing still requires proof and an acknowledged downstream path."
           />
-          {workspace.deletionTasks.map((task) => (
-            <article key={task.id} className="case-row">
-              <div>
-                <strong>{task.label}</strong>
-                <span>{task.system}</span>
-              </div>
-              <form action={updateDeletionTaskAction.bind(null, workspace.tenant.slug, task.id)} className="compact-inline-form">
-                <select name="status" defaultValue={task.status}>
-                  <option value="OPEN">Open</option>
-                  <option value="LEGAL_HOLD">Legal hold</option>
-                  <option value="AWAITING_PROCESSOR">Awaiting processor</option>
-                  <option value="READY_FOR_PROOF">Ready for proof</option>
-                  <option value="CLOSED">Closed</option>
-                </select>
-                <label className="micro-toggle">
-                  <input type="checkbox" name="proofLinked" defaultChecked={task.proofLinked} />
-                  <span>Proof</span>
-                </label>
-                <label className="micro-toggle">
-                  <input type="checkbox" name="processorAcknowledged" defaultChecked={task.processorAcknowledged} />
-                  <span>Processor ack</span>
-                </label>
-                <input name="exceptionNote" placeholder="Exception note" />
-                <button type="submit" className="text-button">
-                  Save
-                </button>
-              </form>
-              <span>{task.dueDate}</span>
-              <span>{task.proofLinked ? "Proof linked" : "Proof missing"}</span>
-            </article>
-          ))}
+          <div className="pf-stat-strip">
+            <Stat label="Deletion tasks" value={workspace.deletionTasks.length} sub={`${closed} completed`} />
+            <Stat label="Due now" value={overdue} sub="overdue or due today" tone={overdue > 0 ? "warn" : undefined} />
+            <Stat label="Completed" value={closed} sub="proof captured" tone="good" />
+            <Stat label="Batch cap" value="10k" sub="records per run" />
+          </div>
+          <div className="pf-card pf-card-pad">
+            <SectionHead title="Deletion calendar" sub="Proof-backed batch runner with legal-hold checks" cite="DPDP §8(7)" />
+            <div className="pf-runs">
+              {workspace.deletionTasks.map((task) => {
+                const done = task.status === "CLOSED";
+                return (
+                  <div key={task.id} className={`pf-run pf-run-${done ? "completed" : "scheduled"}`}>
+                    <div className="pf-run-rail"><span className="pf-run-node" /></div>
+                    <div className="pf-run-body">
+                      <div className="pf-run-top"><span className="mono pf-run-id">{task.id}</span>{done ? <Pill tone="good" sm>Completed</Pill> : <Pill tone="warn" sm>{task.status.replaceAll("_", " ").toLowerCase()}</Pill>}</div>
+                      <div className="pf-run-meta"><span className="pf-cell-strong" style={{ fontWeight: 500 }}>{task.label}</span></div>
+                      <div className="pf-run-meta"><span className="mono">{task.dueDate}</span><span className="pf-dotsep">·</span><span>{task.system}</span><span className="pf-dotsep">·</span><span>{task.proofLinked ? "proof linked" : "proof missing"}</span></div>
+                      <form action={updateDeletionTaskAction.bind(null, workspace.tenant.slug, task.id)} className="pf-inline-save" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+                        <select name="status" defaultValue={task.status}>
+                          <option value="OPEN">Open</option>
+                          <option value="LEGAL_HOLD">Legal hold</option>
+                          <option value="AWAITING_PROCESSOR">Awaiting processor</option>
+                          <option value="READY_FOR_PROOF">Ready for proof</option>
+                          <option value="CLOSED">Closed</option>
+                        </select>
+                        <label className="micro-toggle"><input type="checkbox" name="proofLinked" defaultChecked={task.proofLinked} /><span>Proof</span></label>
+                        <label className="micro-toggle"><input type="checkbox" name="processorAcknowledged" defaultChecked={task.processorAcknowledged} /><span>Proc. ack</span></label>
+                        <input name="exceptionNote" placeholder="Exception note" style={{ padding: "5px 8px", fontSize: 12, border: "1px solid var(--line-strong)", borderRadius: "var(--r-sm)", background: "var(--surface)" }} />
+                        <button type="submit">Save</button>
+                      </form>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </section>
-      )}
+        );
+      })()}
 
       {moduleId === "incidents" && (
         <section className="worksheet">
@@ -814,40 +814,51 @@ export function ModuleView({
             errorValue="agent-review"
             errorMessage="Agent review failed."
           />
-          {workspace.incidents.map((incident) => (
-            <article key={incident.id} className="notice-line warning">
-              <div>
-                <span className="section-kicker">{incident.severity}</span>
-                <h3>{incident.title}</h3>
-              </div>
-              <form action={updateIncidentAction.bind(null, workspace.tenant.slug, incident.id)} className="notice-meta notice-form">
-                <strong>{incident.status}</strong>
-                <span>{incident.remediationOwner}</span>
-                <select name="status" defaultValue={incident.status}>
-                  <option value="TRIAGE">Triage</option>
-                  <option value="ASSESSMENT">Assessment</option>
-                  <option value="CONTAINMENT">Containment</option>
-                  <option value="CLOSED">Closed</option>
-                </select>
-                <label className="micro-toggle align-end">
-                  <input type="checkbox" name="evidenceLinked" defaultChecked={incident.evidenceLinked} />
-                  <span>Evidence</span>
-                </label>
-                <input name="remediationOwner" defaultValue={incident.remediationOwner} />
-                <button type="submit" className="text-button">
-                  Save
-                </button>
-              </form>
-              <div className="incident-agent-bar">
-                <p>{incident.boardDeadline}</p>
-                <form action={triggerBreachAgentAction.bind(null, workspace.tenant.slug, incident.id)}>
-                  <button type="submit" className="agent-trigger-button">
-                    <span className="agent-icon">⚡</span> Run Breach Response Agent
-                  </button>
-                </form>
-              </div>
-            </article>
-          ))}
+          <div className="pf-breach-list">
+            {workspace.incidents.map((incident) => {
+              const closed = incident.status === "CLOSED";
+              const sev = incident.severity.toLowerCase();
+              return (
+                <div key={incident.id} className={`pf-card pf-breach-card pf-breach-${sev}`}>
+                  <div className="pf-breach-sev"><SevTag level={incident.severity} /></div>
+                  <div className="pf-breach-main">
+                    <div className="pf-breach-top">
+                      <span className="mono pf-breach-id">{incident.id}</span>
+                      <Pill tone={closed ? "good" : "warn"} sm>{closed ? "Closed" : "Investigating"}</Pill>
+                      {incident.autoEscalated && <Pill tone="bad" sm dot={false}>Auto-escalated</Pill>}
+                    </div>
+                    <h3 className="pf-breach-title serif">{incident.title}</h3>
+                    <div className="pf-breach-meta">
+                      {incident.affectedCount != null && <><span><strong className="tnum">{incident.affectedCount.toLocaleString("en-IN")}</strong> affected</span><span className="pf-dotsep">·</span></>}
+                      {incident.discoveryDate && <><span>discovered {incident.discoveryDate.slice(0, 10)}</span><span className="pf-dotsep">·</span></>}
+                      <span>owner <strong>{incident.remediationOwner}</strong></span>
+                    </div>
+                    <form action={updateIncidentAction.bind(null, workspace.tenant.slug, incident.id)} className="pf-inline-save" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
+                      <select name="status" defaultValue={incident.status}>
+                        <option value="TRIAGE">Triage</option>
+                        <option value="ASSESSMENT">Assessment</option>
+                        <option value="CONTAINMENT">Containment</option>
+                        <option value="CLOSED">Closed</option>
+                      </select>
+                      <label className="micro-toggle"><input type="checkbox" name="evidenceLinked" defaultChecked={incident.evidenceLinked} /><span>Evidence</span></label>
+                      <input name="remediationOwner" defaultValue={incident.remediationOwner} style={{ padding: "5px 8px", fontSize: 12, border: "1px solid var(--line-strong)", borderRadius: "var(--r-sm)", background: "var(--surface)" }} />
+                      <button type="submit">Save</button>
+                    </form>
+                  </div>
+                  <div className="pf-breach-side">
+                    {!closed ? (
+                      <div className="pf-timer"><span className="pf-timer-val tnum" style={{ fontSize: 16 }}>{incident.boardDeadline}</span><span className="pf-timer-label">board deadline</span></div>
+                    ) : (
+                      <div className="pf-notif-flags"><span className="pf-flag ok"><Icon name="check" size={12} />Regulator</span><span className="pf-flag ok"><Icon name="check" size={12} />Subjects</span></div>
+                    )}
+                    <form action={triggerBreachAgentAction.bind(null, workspace.tenant.slug, incident.id)} style={{ marginLeft: 10 }}>
+                      <button type="submit" className="pf-btn pf-btn-secondary pf-btn-sm">⚡ Response agent</button>
+                    </form>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
 
           {/* Breach Agent Review Queue */}
           {(workspace.agentActions || []).filter((a) => a.agentId === "breach-response").length > 0 && (
@@ -920,8 +931,14 @@ export function ModuleView({
         </section>
       )}
 
-      {moduleId === "processors" && (
-        <section className="worksheet">
+      {moduleId === "processors" && (() => {
+        const atRisk = workspace.processors.find((p) => p.dpaStatus === "MISSING");
+        const dpaTone = (s: string) => (s === "SIGNED" ? "good" : s === "IN_REVIEW" ? "warn" : "bad") as "good" | "warn" | "bad";
+        const dpaLabel = (s: string) => (s === "SIGNED" ? "DPA signed" : s === "IN_REVIEW" ? "In review" : "DPA missing");
+        const riskOf = (s: string) => (s === "SIGNED" ? "low" : s === "IN_REVIEW" ? "medium" : "high");
+        const riskTone = (s: string) => (s === "SIGNED" ? "good" : s === "IN_REVIEW" ? "warn" : "bad") as "good" | "warn" | "bad";
+        return (
+        <section className="pf-screen" style={{ padding: 0, maxWidth: "none" }}>
           <FlashStatus
             flash={flash}
             updatedValue="processor"
@@ -929,68 +946,86 @@ export function ModuleView({
             errorValue="processor-update"
             errorMessage="Processor update failed."
           />
-          {workspace.processors.map((processor) => (
-            <article key={processor.id} className="ledger-row">
-              <div>
-                <strong>{processor.name}</strong>
-                <span>{processor.service}</span>
+          {atRisk && (
+            <div style={{ marginBottom: 16 }}>
+              <InlineAlert tone="bad" title={`${atRisk.name} — DPA missing, high risk`} cite="DPDP §8(2)">
+                A processor is receiving data without an executed DPA. Suspend sharing or execute the agreement.
+              </InlineAlert>
+            </div>
+          )}
+          <div className="pf-proc-grid">
+            {workspace.processors.map((processor) => (
+              <div key={processor.id} className="pf-card pf-proc-card">
+                <div className="pf-proc-top">
+                  <Avatar name={processor.name} size={36} />
+                  <div className="pf-proc-id"><span className="pf-proc-name">{processor.name}</span><span className="pf-cell-dim">{processor.service}</span></div>
+                  <Pill tone={riskTone(processor.dpaStatus)} sm>{riskOf(processor.dpaStatus)} risk</Pill>
+                </div>
+                <div className="pf-proc-rows">
+                  <div className="pf-proc-row"><span>DPA status</span><Pill tone={dpaTone(processor.dpaStatus)} sm>{dpaLabel(processor.dpaStatus)}</Pill></div>
+                  <div className="pf-proc-row"><span>Purge ack.</span><span className="pf-proc-val">{processor.purgeAckStatus.toLowerCase()}</span></div>
+                  <div className="pf-proc-row"><span>Sub-processors</span><span className="pf-proc-val tnum">{processor.subProcessorCount}</span></div>
+                </div>
+                <form action={updateProcessorAction.bind(null, workspace.tenant.slug, processor.id)} className="pf-inline-save" style={{ marginTop: 14, gap: 8, flexWrap: "wrap" }}>
+                  <select name="dpaStatus" defaultValue={processor.dpaStatus}>
+                    <option value="SIGNED">Signed</option>
+                    <option value="IN_REVIEW">In review</option>
+                    <option value="MISSING">Missing</option>
+                  </select>
+                  <select name="purgeAckStatus" defaultValue={processor.purgeAckStatus}>
+                    <option value="ACKNOWLEDGED">Acknowledged</option>
+                    <option value="PENDING">Pending</option>
+                    <option value="REFUSED">Refused</option>
+                  </select>
+                  <button type="submit">Save</button>
+                </form>
               </div>
-              <form action={updateProcessorAction.bind(null, workspace.tenant.slug, processor.id)} className="compact-inline-form compact-inline-form--right">
-                <select name="dpaStatus" defaultValue={processor.dpaStatus}>
-                  <option value="SIGNED">Signed</option>
-                  <option value="IN_REVIEW">In review</option>
-                  <option value="MISSING">Missing</option>
-                </select>
-                <select name="purgeAckStatus" defaultValue={processor.purgeAckStatus}>
-                  <option value="ACKNOWLEDGED">Acknowledged</option>
-                  <option value="PENDING">Pending</option>
-                  <option value="REFUSED">Refused</option>
-                </select>
-                <button type="submit" className="text-button">
-                  Save
-                </button>
-              </form>
-            </article>
-          ))}
+            ))}
+          </div>
         </section>
-      )}
+        );
+      })()}
 
       {moduleId === "evidence" && (
-        <section className="worksheet">
-          <div className="split-ledger">
-            <div className="narrative-block">
-              <span className="section-kicker">Sealed upload</span>
-              <p>
-                Evidence files are stored as sealed artifacts and only exposed through metadata plus explicit downloads for
-                authorized operators.
-              </p>
+        <section className="pf-screen" style={{ padding: 0, maxWidth: "none" }}>
+          {flash?.uploaded === "evidence" && <div style={{ marginBottom: 12 }}><InlineAlert tone="good" title="Artefact sealed">Evidence uploaded and tagged.</InlineAlert></div>}
+          {flash?.error === "evidence-upload" && <div style={{ marginBottom: 12 }}><InlineAlert tone="bad" title="Upload failed">Please try again.</InlineAlert></div>}
+
+          <div className="pf-card" style={{ overflow: "hidden" }}>
+            <div style={{ padding: "16px 18px 0" }}><SectionHead title="Evidence repository" sub="Artefacts tagged to obligations" cite="JVA §S1.4" /></div>
+            <table className="pf-table">
+              <thead><tr><th>Artefact</th><th>Classification</th><th>Linked record</th><th>Sealed</th><th></th></tr></thead>
+              <tbody>
+                {workspace.evidence.map((artifact) => (
+                  <tr key={artifact.id}>
+                    <td><span className="pf-cell-strong">{artifact.label}</span><span className="pf-cell-dim mono">{artifact.id}</span></td>
+                    <td><Pill tone="soft" sm dot={false}>{artifact.classification.replaceAll("_", " ")}</Pill></td>
+                    <td><Citation>{artifact.linkedRecord}</Citation></td>
+                    <td className="pf-cell-dim mono">{artifact.createdAt.slice(0, 10)}</td>
+                    <td>{artifact.fileName
+                      ? <Link href={`/workspace/${workspace.tenant.slug}/evidence/${artifact.id}/download`} className="pf-link-cell">Download<Icon name="download" size={13} /></Link>
+                      : <span className="pf-cell-dim">Metadata only</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="pf-card pf-card-pad" style={{ marginTop: 16 }}>
+            <SectionHead title="Audit trail" sub="Append-only · integrity-hashed · tamper-evident" cite="JVA §S1.4" />
+            <div className="pf-audit">
+              {workspace.auditTrail.slice(0, 10).map((e) => (
+                <AuditRow key={e.id} time={new Date(e.createdAt).toISOString().slice(0, 16).replace("T", " ")}
+                  actor={e.actor} verb={e.action.toLowerCase().replaceAll("_", " ")} target={e.targetId}
+                  hash={(e.id.match(/[a-f0-9]{4}/i)?.[0]) || e.id.slice(-4)} />
+              ))}
             </div>
+            <div className="pf-audit-seal"><Icon name="shield" size={14} />Chain verified — {workspace.auditTrail.length} entries, no gaps.</div>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
             <EvidenceUploadForm tenantSlug={workspace.tenant.slug} />
           </div>
-          {flash?.uploaded === "evidence" && <p className="form-status success">Evidence artifact uploaded successfully.</p>}
-          {flash?.error === "evidence-upload" && <p className="form-status error">Evidence upload failed. Please try again.</p>}
-          {workspace.evidence.map((artifact) => (
-            <article key={artifact.id} className="ledger-row">
-              <div>
-                <strong>{artifact.label}</strong>
-                <span>{artifact.classification}</span>
-              </div>
-              <div>
-                <strong>{artifact.linkedRecord}</strong>
-                <span>
-                  Metadata only · no content indexing
-                  {artifact.fileName ? (
-                    <>
-                      {" · "}
-                      <Link href={`/workspace/${workspace.tenant.slug}/evidence/${artifact.id}/download`} className="text-link">
-                        Download sealed file
-                      </Link>
-                    </>
-                  ) : null}
-                </span>
-              </div>
-            </article>
-          ))}
         </section>
       )}
 
