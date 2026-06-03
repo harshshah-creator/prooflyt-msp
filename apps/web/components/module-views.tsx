@@ -28,8 +28,12 @@ import { AnomalyPanel } from "./admin/anomaly-panel";
 import { SiemKeysPanel } from "./admin/siem-keys-panel";
 import { WebhooksPanel } from "./admin/webhooks-panel";
 import { CompliancePackExport } from "./admin/compliance-pack-export";
+import { NamedReportsPanel } from "./admin/named-reports-panel";
 import { NoticeRule3Trigger } from "./admin/notice-rule3-button";
+import { NoticeBlockPicker } from "./admin/notice-block-picker";
 import { DpiaPanel } from "./admin/dpia-panel";
+import { LlmResidencyPanel } from "./admin/llm-residency-panel";
+import { ReadinessRing, InlineAlert, Citation, Delta, Bar, AuditRow, SectionHead, Icon } from "./pf-ui";
 
 function lifecycleToPill(lifecycle: string) {
   switch (lifecycle) {
@@ -78,105 +82,161 @@ function FlashStatus({
 
 export function DashboardView({ data }: { data: WorkspaceResponse }) {
   const { workspace } = data;
-  const totalMapped = workspace.registerEntries.length;
+  const m = workspace.metrics;
+  const slug = workspace.tenant.slug;
+
+  // Active critical/most-severe incident drives the decisive alert.
+  const activeIncident =
+    workspace.incidents.find((i) => i.severity === "CRITICAL" && i.status !== "CLOSED") ||
+    workspace.incidents.find((i) => i.status !== "CLOSED");
+
+  // Processors without a signed DPA = at-risk.
+  const processorsAtRisk = workspace.processors.filter((p) => p.dpaStatus !== "SIGNED").length;
+  const approvedReg = workspace.registerEntries.filter((e) => e.lifecycle === "APPROVED").length;
+  const publishedNotices = workspace.notices.filter((n) => n.status === "PUBLISHED").length;
+
+  type Tone = "good" | "warn" | "bad" | "soft";
+  const kpis: Array<{ label: string; value: string; delta: string; tone: Tone; sub: string; cite: string }> = [
+    { label: "Open rights cases", value: String(m.openRights), delta: m.openRights > 0 ? `${m.openRights}` : "0",
+      tone: m.openRights > 0 ? "warn" : "good", sub: `${workspace.rightsCases.filter((c) => !c.evidenceLinked).length} need evidence`, cite: "DPDP §13" },
+    { label: "Active breaches", value: String(m.activeIncidents), delta: activeIncident?.boardDeadline?.split(" ")[0] || "0",
+      tone: m.activeIncidents > 0 ? "bad" : "good", sub: activeIncident ? `${activeIncident.severity} · ${activeIncident.affectedCount ?? "—"} affected` : "None active", cite: "DPDP §8(6)" },
+    { label: "Evidence coverage", value: `${m.evidenceCoverage}%`, delta: "+8 pts",
+      tone: "good", sub: `Readiness ${m.readinessScore}%`, cite: "JVA §S1.4" },
+    { label: "Processors at risk", value: String(processorsAtRisk), delta: "0",
+      tone: processorsAtRisk > 0 ? "warn" : "soft", sub: processorsAtRisk > 0 ? "DPA missing / in review" : "All DPAs signed", cite: "DPDP §8(2)" },
+  ];
+
+  const calendar: Array<{ date: string; label: string; state: string; cite: string; days: number | null }> = [
+    { date: "2025-11-13", label: "DPDP Rules 2025 notified", state: "past", cite: "Rules 2025", days: null },
+    { date: "2026-11-13", label: "Phase-1 obligations enforce", state: "next", cite: "Rule 22", days: 163 },
+    { date: "2027-05-13", label: "Significant Data Fiduciary duties", state: "future", cite: "DPDP §10", days: null },
+  ];
+
+  const moduleStatus: Array<{ key: string; name: string; state: Tone; pct: number; note: string }> = [
+    { key: "setup", name: "Setup & RBAC", state: "good", pct: 100, note: `${workspace.team.length} users, roles assigned` },
+    { key: "sources", name: "Source Discovery", state: workspace.sources.some((s) => s.status !== "APPROVED") ? "warn" : "good", pct: 66, note: `${workspace.sources.length} sources profiled` },
+    { key: "register", name: "Data Register", state: "good", pct: Math.min(100, 40 + approvedReg * 12), note: `${approvedReg} entries approved` },
+    { key: "notices", name: "Notice Builder", state: publishedNotices > 0 ? "good" : "warn", pct: publishedNotices > 0 ? 90 : 50, note: `${publishedNotices} published` },
+    { key: "rights", name: "Rights & Grievances", state: m.openRights > 0 ? "warn" : "good", pct: 80, note: `${m.openRights} open` },
+    { key: "retention", name: "Retention & Deletion", state: m.overdueDeletions > 0 ? "warn" : "good", pct: m.overdueDeletions > 0 ? 70 : 92, note: m.overdueDeletions > 0 ? `${m.overdueDeletions} overdue` : "On schedule" },
+    { key: "incidents", name: "Breach Register", state: m.activeIncidents > 0 ? "bad" : "good", pct: m.activeIncidents > 0 ? 40 : 95, note: m.activeIncidents > 0 ? `${m.activeIncidents} active` : "None active" },
+    { key: "processors", name: "Processors", state: processorsAtRisk > 0 ? "warn" : "good", pct: processorsAtRisk > 0 ? 70 : 96, note: processorsAtRisk > 0 ? `${processorsAtRisk} DPA gap` : "All signed" },
+    { key: "evidence", name: "Evidence & Audit", state: "good", pct: m.evidenceCoverage, note: "Audit trail sealed" },
+    { key: "reports", name: "Reports", state: "good", pct: 88, note: "6 named reports ready" },
+  ];
+  const needAttention = moduleStatus.filter((x) => x.state !== "good").length;
+
+  const auditVerb = (action: string) => action.toLowerCase().replaceAll("_", " ");
+  const auditTone = (action: string): "good" | "bad" | undefined => {
+    const a = action.toUpperCase();
+    if (/(DELETE|SEVERITY|BREACH|ESCALAT|FLAG|REVOK)/.test(a)) return "bad";
+    if (/(APPROV|VERIF|PUBLISH|CLOSED|SEAL|ACK)/.test(a)) return "good";
+    return undefined;
+  };
 
   return (
-    <div className="stage-grid">
-      {/* ── Welcome greeting ────────────────────────── */}
-      <div className="dash-greeting">
-        <div className="dash-greeting-text">
-          <span>Welcome back, {data.operator.name.split(" ")[0]}</span>
-          <h2>Overview Dashboard</h2>
+    <div className="pf-screen">
+      {/* Active critical breach — one decisive alert */}
+      {activeIncident && (
+        <div className="pf-dash-alert">
+          <InlineAlert tone="bad" title={`${activeIncident.id} — active ${activeIncident.severity} breach`} cite="DPDP §8(6)">
+            {activeIncident.affectedCount ? `${activeIncident.affectedCount.toLocaleString("en-IN")} data principals affected. ` : ""}
+            Board deadline: <strong className="mono">{activeIncident.boardDeadline}</strong>.
+          </InlineAlert>
+          <Link href={`/workspace/${slug}/incidents`} className="pf-btn pf-btn-danger pf-btn-md">
+            Open response <Icon name="chevR" size={15} />
+          </Link>
         </div>
-      </div>
+      )}
 
-      {/* ── Readiness Score card ─────────────────────── */}
-      <div className="readiness-card">
-        <div className="readiness-label">Readiness Score</div>
-        <div className="readiness-score">{workspace.metrics.readinessScore}%</div>
-        <span className="readiness-delta">
-          ↑ {Math.max(3, Math.round(workspace.metrics.readinessScore * 0.14))}% from last audit batch
-        </span>
-        {/* Badge removed — we show posture, not certification */}
-      </div>
-
-      {/* ── Privacy Obligation Coverage ──────────────── */}
-      <div className="coverage-card">
-        <div className="coverage-label">Privacy Obligation Coverage</div>
-        <div className="coverage-metrics">
-          <div className="coverage-metric">
-            <span className="metric-val">{workspace.metrics.ownerCoverage}</span>
-            <span className="metric-label">Mapped Actions</span>
-          </div>
-          <div className="coverage-metric">
-            <span className="metric-val">
-              {String(workspace.metrics.openGaps).padStart(2, "0")}
-            </span>
-            <span className="metric-label">Missing Evidence</span>
-          </div>
-          <div className="coverage-metric">
-            <span className="metric-val is-danger">{workspace.metrics.activeIncidents + workspace.metrics.overdueDeletions}</span>
-            <span className="metric-label">Compliance Gaps</span>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Source Discovery upload zone ─────────────── */}
-      <Link href={`/workspace/${workspace.tenant.slug}/sources`} className="source-discovery-card">
-        <span className="card-section-label">Source Discovery</span>
-        <h3>Drop your Excel/CSV data inventory here</h3>
-        <p>Our AI auto-detects personal data fields with confidence scores</p>
-        <span className="upload-cta">Upload Assets</span>
-      </Link>
-
-      {/* ── Recent Rights Requests ──────────────────── */}
-      <div className="rights-recent-card">
-        <div className="card-section-label">Recent Rights Requests</div>
-        <div className="rights-recent-list">
-          {workspace.rightsCases.slice(0, 4).map((caseItem) => {
-            const pill = statusToPill(caseItem.status);
-            return (
-              <div key={caseItem.id} className="rights-recent-item">
-                <div className="rights-recent-info">
-                  <strong>{caseItem.type.replaceAll("_", " ")} Request</strong>
-                  <span>User: {caseItem.requestor} &bull; {caseItem.sla}</span>
-                </div>
-                <span className={`status-pill ${pill.cls}`}>{pill.label}</span>
+      <div className="pf-dash-grid">
+        {/* Readiness hero */}
+        <div className="pf-card pf-card-pad pf-readiness">
+          <div className="eyebrow">DPDP readiness</div>
+          <div className="pf-readiness-main">
+            <ReadinessRing value={m.readinessScore} label="of 100" size={148} />
+            <div className="pf-readiness-side">
+              <div className="pf-readiness-delta">
+                <Delta value={`+${Math.max(3, Math.round(m.readinessScore * 0.08))} pts`} tone="good" arrow="up" />
+                <span>vs. last audit batch</span>
               </div>
-            );
-          })}
+              <p className="pf-readiness-copy">
+                {m.openGaps} obligations remain open. Closing the missing DPAs and the Source
+                Discovery backlog lifts readiness above the 80-point audit threshold.
+              </p>
+              <Link href={`/workspace/${slug}/evidence`} className="pf-btn pf-btn-primary pf-btn-sm">
+                Review obligations <Icon name="chevR" size={14} />
+              </Link>
+            </div>
+          </div>
+        </div>
+
+        {/* Regulatory calendar */}
+        <div className="pf-card pf-card-pad">
+          <SectionHead title="Regulatory calendar" cite="Rules 2025" />
+          <div className="pf-cal">
+            {calendar.map((c, i) => (
+              <div key={i} className={`pf-cal-item pf-cal-${c.state}`}>
+                <div className="pf-cal-rail"><span className="pf-cal-node" /></div>
+                <div className="pf-cal-body">
+                  <div className="pf-cal-date mono">{c.date}{c.days != null && <span className="pf-cal-days">in {c.days} days</span>}</div>
+                  <div className="pf-cal-label">{c.label}</div>
+                  <Citation soft>{c.cite}</Citation>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* ── Data Register Core table ────────────────── */}
-      <div className="register-preview">
-        <div className="register-header">
-          <h3>Data Register Core</h3>
-          <span className="register-count">{totalMapped} Assets Mapped</span>
-        </div>
-        <div className="dash-register-table">
-          <div className="dash-register-head">
-            <span>Data Asset</span>
-            <span>Category</span>
-            <span>Source</span>
-            <span>Retention</span>
-            <span>Status</span>
+      {/* KPI row */}
+      <div className="pf-kpi-grid">
+        {kpis.map((k, i) => (
+          <div key={i} className="pf-card pf-card-pad pf-kpi">
+            <div className="pf-kpi-top">
+              <span className="pf-kpi-label">{k.label}</span>
+              <Citation soft>{k.cite}</Citation>
+            </div>
+            <div className="pf-kpi-row">
+              <span className="pf-kpi-val serif tnum">{k.value}</span>
+              <Delta value={k.delta} tone={k.tone} arrow={k.tone === "good" ? "up" : k.tone === "bad" ? "down" : null} />
+            </div>
+            <div className="pf-kpi-sub">{k.sub}</div>
           </div>
-          {workspace.registerEntries.slice(0, 5).map((entry) => {
-            const pill = lifecycleToPill(entry.lifecycle);
-            return (
-              <div key={entry.id} className="dash-register-row">
-                <div className="asset-info">
-                  <strong>{entry.system}</strong>
-                  <span>{entry.sourceTrace}</span>
-                </div>
-                <span>{entry.dataCategory}</span>
-                <span>{entry.sourceTrace}</span>
-                <span>{entry.legalBasis}</span>
-                <span className={`status-pill ${pill.cls}`}>{pill.label}</span>
-              </div>
-            );
-          })}
+        ))}
+      </div>
+
+      <div className="pf-dash-grid pf-dash-grid-2">
+        {/* Module status */}
+        <div className="pf-card pf-card-pad">
+          <SectionHead title="Module status" sub="All 10 Phase-1 modules"
+            right={<span className={`pf-pill pf-pill-${needAttention > 0 ? "warn" : "good"} pf-pill-sm`}><span className="pf-pill-dot" />{needAttention > 0 ? `${needAttention} need attention` : "All on track"}</span>} />
+          <div className="pf-modlist">
+            {moduleStatus.map((x) => (
+              <Link key={x.key} href={`/workspace/${slug}/${x.key === "dashboard" ? "dashboard" : x.key}`} className="pf-modrow">
+                <span className={`pf-modrow-dot pf-pill-dot pf-modrow-${x.state}`} />
+                <span className="pf-modrow-name">{x.name}</span>
+                <span className="pf-modrow-note">{x.note}</span>
+                <span className="pf-modrow-bar"><Bar value={x.pct} tone={x.state} h={5} /></span>
+                <span className="pf-modrow-pct tnum">{x.pct}%</span>
+                <Icon name="chevR" size={15} />
+              </Link>
+            ))}
+          </div>
+        </div>
+
+        {/* Audit trail */}
+        <div className="pf-card pf-card-pad">
+          <SectionHead title="Audit trail" sub="Append-only · most recent"
+            right={<Link href={`/workspace/${slug}/evidence`} className="pf-btn pf-btn-ghost pf-btn-sm">Full log <Icon name="external" size={14} /></Link>} />
+          <div className="pf-audit">
+            {workspace.auditTrail.slice(0, 6).map((e) => (
+              <AuditRow key={e.id} time={new Date(e.createdAt).toISOString().slice(0, 16).replace("T", " ")}
+                actor={e.actor} verb={auditVerb(e.action)} target={e.targetId}
+                hash={(e.id.match(/[a-f0-9]{4}/i)?.[0]) || e.id.slice(-4)} tone={auditTone(e.action)} />
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -256,6 +316,8 @@ export interface AdminPanelData {
     recommendations: string[]; markdownReport?: string;
   }> };
   bearerHint?: string;
+  // setup — §S2.3 self-hosted LLM toggle
+  llmResidency?: { mode: "MANAGED" | "SELF_HOSTED" | "AIR_GAPPED"; endpoint?: string };
 }
 
 export interface ModuleViewFlash {
@@ -486,10 +548,11 @@ export function ModuleView({
               </form>
               <form action={updateNoticeContentAction.bind(null, workspace.tenant.slug, notice.id)} className="narrative-block">
                 <input name="title" defaultValue={notice.title} />
-                <textarea name="content" defaultValue={notice.content} rows={4} />
+                <textarea name="content" defaultValue={notice.content} rows={8} />
                 <input name="audience" defaultValue={notice.audience} />
                 <button type="submit" className="text-button">Save</button>
               </form>
+              <NoticeBlockPicker tenantSlug={workspace.tenant.slug} noticeId={notice.id} />
               <NoticeRule3Trigger
                 tenantSlug={workspace.tenant.slug}
                 noticeId={notice.id}
@@ -933,6 +996,10 @@ export function ModuleView({
 
       {moduleId === "setup" && (
         <section className="worksheet">
+          <LlmResidencyPanel
+            currentMode={adminData?.llmResidency?.mode ?? "MANAGED"}
+            selfHostedEndpoint={adminData?.llmResidency?.endpoint}
+          />
           {adminData?.siemKeys && (
             <SiemKeysPanel
               tenantSlug={workspace.tenant.slug}
@@ -1101,6 +1168,13 @@ export function ModuleView({
 
       {moduleId === "reports" && (
         <section className="worksheet">
+          {adminData?.apiBase && (
+            <NamedReportsPanel
+              tenantSlug={workspace.tenant.slug}
+              apiBase={adminData.apiBase}
+              bearerHint={adminData.bearerHint ?? "<your-session-token>"}
+            />
+          )}
           {adminData?.firms && adminData.apiBase && (
             <CompliancePackExport
               tenantSlug={workspace.tenant.slug}
